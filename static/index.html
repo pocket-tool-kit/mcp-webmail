@@ -10,7 +10,7 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-<header><h1>✉ Portable Webmail</h1><button id="compose">新規作成</button><button id="sync">同期</button><button id="logout">ログアウト</button></header>
+<header><h1>✉ Portable Webmail</h1><button id="account-settings">アカウント設定</button><button id="compose">新規作成</button><button id="sync">同期</button><button id="logout">ログアウト</button></header>
 <div id="status" role="status" aria-live="polite">ログインしてください。</div>
 <main class="panes">
   <nav aria-label="アカウントとフォルダ"><button id="all" class="folder">すべてのアカウント</button><div id="accounts"></div></nav>
@@ -19,5 +19,45 @@
 </main>
 <dialog id="login" class="login"><h2>ローカルメールに接続</h2><p>起動端末または data/config.json の web_token を入力してください。トークンはこの画面のメモリ内だけに保持します。</p><form id="login-form"><label>Webトークン<input id="token" type="password" autocomplete="off" required></label><p id="login-error" class="error"></p><button class="primary">接続</button></form></dialog>
 <dialog id="editor"><form id="draft-form"><h2 id="editor-title">下書きを作成</h2><label>送信元アカウント<select id="draft-account" required></select></label><label>宛先（メールアドレスをカンマ区切り）<input id="draft-to" required></label><label>件名<input id="draft-subject" maxlength="998"></label><label>本文<textarea id="draft-body" maxlength="1000000"></textarea></label><p>IMAPの下書きに保存します。同期後に内容を開いて確認すると送信できます。</p><p id="draft-error" class="error"></p><div class="row"><button type="button" id="cancel-draft">閉じる</button><button class="primary" id="save-draft">下書きを保存</button></div></form></dialog>
+<dialog id="settings-dialog" aria-labelledby="settings-title">
+  <h2 id="settings-title">アカウント設定</h2>
+  <p id="vault-status" role="status"></p>
+  <form id="unlock-form">
+    <p id="vault-help"></p>
+    <label>マスターパスワード<input id="master-password" type="password" autocomplete="off" maxlength="1024" required></label>
+    <label id="master-confirm-label">マスターパスワード（確認）<input id="master-confirm" type="password" autocomplete="off" maxlength="1024"></label>
+    <button id="unlock-button" class="primary">ロック解除</button>
+    <p>マスターパスワードは保存されません。忘れると保存済みのメールパスワードを復号できません。Webトークンとは別の値を設定してください。</p>
+  </form>
+  <p id="settings-error" class="error" role="alert"></p>
+  <form id="account-form">
+    <fieldset id="account-fields" disabled>
+      <legend>メールアカウントの登録・編集</legend>
+      <label>編集するアカウント<select id="account-choice"><option value="">新しく登録する</option></select></label>
+      <label>アカウントID（英数字・ハイフン・アンダースコア）<input id="account-id" pattern="[a-zA-Z0-9_-]{1,64}" maxlength="64" required></label>
+      <label>表示名<input id="account-name" maxlength="100" required></label>
+      <label>メールアドレス<input id="account-email" type="email" required></label>
+      <label><input id="account-enabled" type="checkbox" style="width:auto" checked> このアカウントの同期を有効にする</label>
+      <h3>受信サーバー（IMAP）</h3>
+      <label>IMAPサーバー<input id="imap-host" maxlength="253" placeholder="imap.example.com" required></label>
+      <label>ポート<input id="imap-port" type="number" min="1" max="65535" value="993" required></label>
+      <label>接続方式<select id="imap-security"><option value="tls">TLS（通常993）</option><option value="starttls">STARTTLS（通常143）</option></select></label>
+      <label>ユーザー名<input id="imap-username" maxlength="500" autocomplete="off" required></label>
+      <label>IMAPパスワード<input id="imap-password" type="password" autocomplete="new-password" maxlength="4096" placeholder="変更しない場合は空欄"></label>
+      <h3>送信サーバー（SMTP）</h3>
+      <label>SMTPサーバー<input id="smtp-host" maxlength="253" placeholder="smtp.example.com" required></label>
+      <label>ポート<input id="smtp-port" type="number" min="1" max="65535" value="465" required></label>
+      <label>接続方式<select id="smtp-security"><option value="tls">TLS（通常465）</option><option value="starttls">STARTTLS（通常587）</option></select></label>
+      <label>ユーザー名<input id="smtp-username" maxlength="500" autocomplete="off" required></label>
+      <label>SMTPパスワード<input id="smtp-password" type="password" autocomplete="new-password" maxlength="4096" placeholder="変更しない場合は空欄"></label>
+      <label>同期フォルダ（1行に1つ）<textarea id="account-folders" style="min-height:80px" required>INBOX</textarea></label>
+      <label>下書きフォルダ（空欄で自動検出）<input id="account-drafts"></label>
+      <p>パスワードは暗号化して保存します。登録済みの値は画面に表示しません。接続先を変更する際はメールサービスの正しいサーバー名を確認してください。</p>
+      <button id="save-account" class="primary">暗号化して保存</button>
+    </fieldset>
+  </form>
+  <p>暗号化の対象はメールパスワードです。メール本文のDB、サーバー名、メールアドレス、Web/MCPトークンは暗号化されません。以前作成したconfig.json.bak等の平文バックアップは自動削除しません。</p>
+  <div class="row"><button id="close-settings" type="button">閉じる</button></div>
+</dialog>
 </body>
 </html>

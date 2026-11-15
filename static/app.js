@@ -138,7 +138,7 @@ function openEditor(mail = null) {
 $("login").addEventListener("cancel", event => event.preventDefault());
 $("login-form").onsubmit = async event => {
   event.preventDefault(); token = $("token").value.trim();
-  try { await refresh(); $("token").value = ""; $("login").close(); status("接続済み。件数はローカルキャッシュ基準です。閲覧による既読変更は行いません。"); }
+  try { await refresh(); $("token").value = ""; $("login").close(); status("接続済み。件数はローカルキャッシュ基準です。閲覧による既読変更は行いません。"); await offerUnlock(); }
   catch (e) { token = ""; $("login-error").textContent = e.message; }
 };
 $("logout").onclick = () => location.reload();
@@ -158,7 +158,7 @@ $("more").onclick = () => loadMessages(true).catch(fail);
 $("sync").onclick = async () => { try { await api("/api/sync", {method: "POST"}); status("同期を要求しました。数秒後に一覧を更新します。"); } catch (e) { fail(e); } };
 let syncErrorShown = false;
 setInterval(async () => {
-  if (!token || $("editor").open || $("login").open || document.hidden) return;
+  if (!token || $("editor").open || $("settings-dialog").open || $("login").open || document.hidden) return;
   try {
     await loadAccounts();
     // Reloading resets to page 1; keep the list while the user has paged further.
@@ -175,3 +175,85 @@ setInterval(async () => {
   } catch (e) { fail(e); }
 }, 15000);
 $("login").showModal();
+
+let accountState = null;
+function clearAccountSecrets() {
+  for (const id of ["master-password", "master-confirm", "imap-password", "smtp-password"]) $(id).value = "";
+}
+function selectAccount(id = "") {
+  const account = accountState.accounts.find(a => a.id === id);
+  $("account-choice").value = account ? id : "";
+  $("account-id").value = account?.id || "";
+  $("account-id").readOnly = Boolean(account);
+  $("account-name").value = account?.name || "";
+  $("account-email").value = account?.email || "";
+  $("account-enabled").checked = account ? account.enabled : true;
+  $("account-folders").value = account?.folders.join("\n") || "INBOX";
+  $("account-drafts").value = account?.drafts_folder || "";
+  for (const kind of ["imap", "smtp"]) {
+    const endpoint = account?.[kind];
+    $(kind + "-host").value = endpoint?.host || "";
+    $(kind + "-port").value = endpoint?.port || (kind === "imap" ? 993 : 465);
+    $(kind + "-security").value = endpoint?.security || "tls";
+    $(kind + "-username").value = endpoint?.username || "";
+    $(kind + "-password").value = "";
+    $(kind + "-password").required = !endpoint?.has_password;
+    $(kind + "-password").placeholder = endpoint?.has_password ? "登録済み（変更しない場合は空欄）" : "新しいパスワードを入力";
+  }
+}
+function renderAccountSettings(state, selection = "") {
+  accountState = state;
+  $("vault-status").textContent = state.encrypted ? (state.locked ? "暗号化済み・ロック中。解除するとメール同期を開始します。" : "暗号化済み・ロック解除中。このサーバーを停止すると再びロックされます。") : "初回設定：マスターパスワードを決めて、既存のメールパスワードを暗号化してください。";
+  $("unlock-form").classList.toggle("hidden", !state.locked);
+  $("master-confirm-label").classList.toggle("hidden", state.encrypted);
+  $("master-confirm").required = !state.encrypted;
+  $("master-password").minLength = state.encrypted ? 1 : 12;
+  $("unlock-button").textContent = state.encrypted ? "ロックを解除" : "暗号化を開始（既存設定も移行）";
+  $("vault-help").textContent = state.encrypted ? "起動後に一度、マスターパスワードを入力してください。" : "12文字以上の長く推測されにくいパスワードを設定してください。既存のIMAP/SMTPパスワードは保持したまま暗号化します。";
+  $("account-fields").disabled = state.locked;
+  $("account-choice").replaceChildren();
+  const fresh = element("option", "新しく登録する"); fresh.value = ""; $("account-choice").append(fresh);
+  for (const account of state.accounts) {
+    const option = element("option", `${account.name} (${account.email})${account.enabled ? "" : "・無効"}`);
+    option.value = account.id; $("account-choice").append(option);
+  }
+  selectAccount(selection);
+}
+async function openAccountSettings(initialState = null) {
+  clearAccountSecrets(); $("settings-error").textContent = "";
+  renderAccountSettings(initialState || await api("/api/settings"));
+  if (!$("settings-dialog").open) $("settings-dialog").showModal();
+}
+async function offerUnlock() {
+  try {
+    const state = await api("/api/settings");
+    if (state.locked || !state.accounts.some(a => a.enabled)) await openAccountSettings(state);
+  } catch (e) { fail(e); }
+}
+$("account-settings").onclick = () => openAccountSettings().catch(fail);
+$("account-choice").onchange = () => selectAccount($("account-choice").value);
+$("close-settings").onclick = () => $("settings-dialog").close();
+$("settings-dialog").addEventListener("close", clearAccountSecrets);
+$("unlock-form").onsubmit = async event => {
+  event.preventDefault(); $("unlock-button").disabled = true; $("settings-error").textContent = "";
+  try {
+    const result = await api("/api/settings/unlock", {method: "POST", body: JSON.stringify({master_password: $("master-password").value, confirmation: accountState.encrypted ? null : $("master-confirm").value})});
+    clearAccountSecrets(); renderAccountSettings(result);
+    status("ロックを解除しました。有効なアカウントの同期を開始します。");
+    await refresh();
+  } catch (e) { $("settings-error").textContent = e.message; }
+  finally { $("master-password").value = ""; $("master-confirm").value = ""; $("unlock-button").disabled = false; }
+};
+$("account-form").onsubmit = async event => {
+  event.preventDefault(); $("save-account").disabled = true; $("settings-error").textContent = "";
+  const input = {id: $("account-id").value.trim(), name: $("account-name").value.trim(), email: $("account-email").value.trim(), enabled: $("account-enabled").checked, folders: $("account-folders").value.split("\n").map(v => v.trim()).filter(Boolean), drafts_folder: $("account-drafts").value.trim() || null};
+  for (const kind of ["imap", "smtp"]) input[kind] = {host: $(kind + "-host").value.trim(), port: Number($(kind + "-port").value), username: $(kind + "-username").value.trim(), security: $(kind + "-security").value, password: $(kind + "-password").value};
+  try {
+    const result = await api(`/api/settings/accounts/${encodeURIComponent(input.id)}`, {method: "PUT", body: JSON.stringify(input)});
+    clearAccountSecrets(); renderAccountSettings(result, input.id);
+    $("vault-status").textContent = "暗号化して保存しました。設定は再起動せず反映されます。";
+    status("アカウントを保存しました。接続結果は同期ステータスで確認できます。");
+    await refresh();
+  } catch (e) { $("settings-error").textContent = e.message; }
+  finally { $("save-account").disabled = false; }
+};
