@@ -22,7 +22,8 @@ class Endpoint(StrictModel):
     host: str = Field(min_length=1, max_length=253, pattern=r"^[^\s/\\]+$")
     port: int = Field(ge=1, le=65535)
     username: str = Field(min_length=1)
-    password: SecretStr
+    password: SecretStr = SecretStr("")
+    encrypted_password: SecretStr | None = None
     security: Literal["tls", "starttls"] = "tls"
 
 
@@ -44,7 +45,14 @@ class Account(StrictModel):
         return self
 
 
+class EncryptionMetadata(StrictModel):
+    version: Literal[1] = 1
+    salt: str = Field(max_length=128)
+    verifier: str = Field(max_length=256)
+
+
 class Settings(StrictModel):
+    credential_encryption: EncryptionMetadata | None = None
     web_token: SecretStr = Field(min_length=32)
     mcp_token: SecretStr = Field(min_length=32)
     sync_interval: int = Field(default=60, ge=10, le=86400)
@@ -67,6 +75,8 @@ class Settings(StrictModel):
     def account(self, account_id: str) -> Account:
         for account in self.accounts:
             if account.id == account_id and account.enabled:
+                if not account.imap.password.get_secret_value() or not account.smtp.password.get_secret_value():
+                    raise ValueError("アカウント設定画面で暗号化設定・ロック解除を行ってください。")
                 return account
         raise ValueError("Unknown or disabled account")
 

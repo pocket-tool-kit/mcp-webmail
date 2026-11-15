@@ -155,6 +155,9 @@ class SyncService:
         self.status = {}
 
     async def sync_account(self, account):
+        if not account.imap.password.get_secret_value():
+            self.status[account.id] = {"ok": False, "error": "アカウント設定でマスターパスワードを入力してください。", "locked": True}
+            return
         status = {"ok": True, "drafts_folder": None, "folders": {}}
         client = None
         try:

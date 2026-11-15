@@ -1,0 +1,236 @@
+"""Web-only account management; one atomic config, no persisted decryption key."""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+from filelock import FileLock
+from pydantic import EmailStr, Field, SecretStr
+
+from .config import Account, CONFIG, EncryptionMetadata, Endpoint, Settings, StrictModel, load_config
+
+CHECK = b"portable-webmail-credentials-v1"
+
+
+def encode(value: bytes) -> str:
+    return base64.b64encode(value).decode("ascii")
+
+
+def decode(value: str) -> bytes:
+    return base64.b64decode(value, validate=True)
+
+
+def derive(password: str, salt: bytes) -> bytes:
+    if len(salt) != 16:
+        raise ValueError("Invalid encryption metadata")
+    return Scrypt(salt=salt, length=32, n=2**17, r=8, p=1).derive(password.encode("utf-8"))
+
+
+def encrypt(key: bytes, value: str, context: str) -> str:
+    nonce = os.urandom(12)
+    return encode(nonce + AESGCM(key).encrypt(nonce, value.encode("utf-8"), context.encode()))
+
+
+def decrypt(key: bytes, value: str, context: str) -> str:
+    raw = decode(value)
+    return AESGCM(key).decrypt(raw[:12], raw[12:], context.encode()).decode("utf-8")
+
+
+def endpoint_context(account, kind):
+    ep = getattr(account, kind)
+    # Prevent changing a host/user in a stolen config to exfiltrate its password.
+    return json.dumps(["v1", account.id, kind, ep.host, ep.port, ep.username, ep.security], separators=(",", ":"))
+
+
+class UnlockInput(StrictModel):
+    master_password: SecretStr = Field(min_length=1, max_length=1024)
+    confirmation: SecretStr | None = Field(default=None, max_length=1024)
+
+
+class EndpointInput(StrictModel):
+    host: str = Field(min_length=1, max_length=253, pattern=r"^[^\s/\\]+$")
+    port: int = Field(ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=500)
+    security: str = Field(pattern=r"^(tls|starttls)$")
+    # Empty means keep existing, and is never returned by the read API.
+    password: SecretStr = Field(default=SecretStr(""), max_length=4096)
+
+
+class AccountInput(StrictModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    name: str = Field(min_length=1, max_length=100)
+    email: EmailStr
+    enabled: bool = True
+    folders: list[str] = Field(default_factory=lambda: ["INBOX"], min_length=1, max_length=100)
+    drafts_folder: str | None = None
+    imap: EndpointInput
+    smtp: EndpointInput
+
+
+class ConfigurationManager:
+    def __init__(self, path: Path = CONFIG):
+        self.path = path
+        self._mutex = threading.RLock()
+        self._key = None
+        self._failures = 0
+        self._blocked_until = 0.0
+        if path == CONFIG and not path.exists():
+            load_config()
+        self._disk = self._read()
+        self._revision = self._digest()
+        self.settings = self._disk.model_copy(deep=True)
+        # Existing plaintext is read only for explicit migration, never exposed
+        # to IMAP/SMTP while the user has not enabled encryption.
+        self._replace_runtime(self._disk, None)
+
+    def _read(self):
+        try:
+            value = Settings.model_validate_json(self.path.read_text(encoding="utf-8"))
+            if value.credential_encryption and any(ep.password.get_secret_value() for a in value.accounts for ep in (a.imap, a.smtp)):
+                raise ValueError()
+            if not value.credential_encryption and any(ep.encrypted_password for a in value.accounts for ep in (a.imap, a.smtp)):
+                raise ValueError()
+            return value
+        except Exception:
+            raise ValueError("設定ファイルが不正です。暗号化後はpasswordを手入力せず、登録画面を使用してください。") from None
+
+    def _digest(self):
+        return hashlib.sha256(self.path.read_bytes()).hexdigest()
+
+    def _replace_runtime(self, settings, key):
+        runtime = settings.model_copy(deep=True)
+        for account in runtime.accounts:
+            for kind in ("imap", "smtp"):
+                endpoint = getattr(account, kind)
+                value = ""
+                if key and endpoint.encrypted_password:
+                    value = decrypt(key, endpoint.encrypted_password.get_secret_value(), endpoint_context(account, kind))
+                endpoint.password = SecretStr(value)
+        # Keep the Settings object shared by sync / REST / HTTP MCP alive.
+        for name in Settings.model_fields:
+            setattr(self.settings, name, getattr(runtime, name))
+
+    def _write(self, settings, key):
+        # Both cross-process and in-process serialization are required.
+        with FileLock(str(self.path.parent / "config.lock"), timeout=10):
+            if self._digest() != self._revision:
+                raise ValueError("設定が外部で変更されました。アプリを再起動して再入力してください。")
+            document = settings.model_dump(mode="json")
+            for name in ("web_token", "mcp_token"):
+                document[name] = getattr(settings, name).get_secret_value()
+            for account in document["accounts"]:
+                source = settings.find_account(account["id"])
+                for kind in ("imap", "smtp"):
+                    endpoint = getattr(source, kind)
+                    account[kind].pop("password", None)
+                    account[kind]["encrypted_password"] = encrypt(key, endpoint.password.get_secret_value(), endpoint_context(source, kind))
+            serialized = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+            disk = Settings.model_validate_json(serialized)
+            descriptor, temporary = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=self.path.parent)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as out:
+                    out.write(serialized)
+                    out.flush()
+                    os.fsync(out.fileno())
+                # The temporary file contains ciphertext only. No plaintext backup.
+                os.replace(temporary, self.path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            self._disk, self._revision, self._key = disk, self._digest(), key
+            self._replace_runtime(disk, key)
+
+    def public_state(self):
+        with self._mutex:
+            accounts = []
+            for account in self._disk.accounts:
+                item = account.model_dump(mode="json", exclude={"imap", "smtp"})
+                for kind in ("imap", "smtp"):
+                    ep = getattr(account, kind)
+                    item[kind] = ep.model_dump(mode="json", exclude={"password", "encrypted_password"})
+                    item[kind]["has_password"] = bool(ep.encrypted_password or ep.password.get_secret_value())
+                accounts.append(item)
+            return {"encrypted": self._disk.credential_encryption is not None,
+                    "locked": self._key is None, "accounts": accounts}
+
+    def refresh(self):
+        """stdio processes see Web edits without persisting or sharing the key."""
+        with self._mutex, FileLock(str(self.path.parent / "config.lock"), timeout=10):
+            revision = self._digest()
+            if revision == self._revision:
+                return
+            disk = self._read()
+            key = self._key if disk.credential_encryption == self._disk.credential_encryption else None
+            try:
+                self._replace_runtime(disk, key)
+            except Exception:
+                self._replace_runtime(disk, None)
+                self._key = None
+                raise ValueError("暗号化設定が変更されています。再起動してロックを解除してください。") from None
+            self._disk, self._revision, self._key = disk, revision, key
+
+    def unlock(self, data: UnlockInput):
+        with self._mutex:
+            if time.monotonic() < self._blocked_until:
+                raise ValueError("試行回数が多いため、60秒後に再試行してください。")
+            password = data.master_password.get_secret_value()
+            metadata = self._disk.credential_encryption
+            if not metadata:
+                if len(password) < 12 or not data.confirmation or password != data.confirmation.get_secret_value():
+                    raise ValueError("新しいマスターパスワードは12文字以上とし、確認欄にも同じ値を入力してください。")
+                if password in (self._disk.web_token.get_secret_value(), self._disk.mcp_token.get_secret_value()):
+                    raise ValueError("マスターパスワードにはWeb/MCPトークンと異なる値を指定してください。")
+                salt = os.urandom(16)
+                key = derive(password, salt)
+                candidate = self._disk.model_copy(deep=True)
+                candidate.credential_encryption = EncryptionMetadata(salt=encode(salt), verifier=encrypt(key, CHECK.decode(), "verifier:v1"))
+                self._write(candidate, key)
+            else:
+                try:
+                    key = derive(password, decode(metadata.salt))
+                    if decrypt(key, metadata.verifier, "verifier:v1") != CHECK.decode():
+                        raise ValueError()
+                    # Decrypt all before publishing any runtime changes.
+                    self._replace_runtime(self._disk, key)
+                except Exception:
+                    self._failures += 1
+                    if self._failures >= 5:
+                        self._blocked_until = time.monotonic() + 60
+                        self._failures = 0
+                    raise ValueError("マスターパスワードが違うか、暗号化データが変更されています。") from None
+                self._key = key
+            self._failures = 0
+            return self.public_state()
+
+    def save_account(self, data: AccountInput):
+        with self._mutex:
+            if self._key is None:
+                raise ValueError("先にマスターパスワードでロックを解除してください。")
+            candidate = self.settings.model_copy(deep=True)
+            old = candidate.find_account(data.id)
+            document = data.model_dump(exclude={"imap", "smtp"})
+            for kind in ("imap", "smtp"):
+                value = getattr(data, kind)
+                password = value.password.get_secret_value()
+                if not password and old:
+                    password = getattr(old, kind).password.get_secret_value()
+                if not password:
+                    raise ValueError(f"{kind.upper()}のパスワードを入力してください。")
+                document[kind] = Endpoint(**value.model_dump(exclude={"password"}), password=SecretStr(password))
+            try:
+                account = Account.model_validate(document)
+            except Exception:
+                raise ValueError("アカウント設定を確認してください。フォルダ名に改行は使用できません。") from None
+            candidate.accounts = [account if a.id == account.id else a for a in candidate.accounts]
+            if old is None:
+                candidate.accounts.append(account)
+            self._write(candidate, self._key)
+            return self.public_state()

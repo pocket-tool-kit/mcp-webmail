@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from filelock import FileLock, Timeout
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -15,11 +16,13 @@ from .db import Database
 from .imap_sync import SyncService
 from .mcp_server import make_mcp
 from .smtp_client import DraftInput, create_draft, send_reviewed_draft
+from .account_settings import AccountInput, ConfigurationManager, UnlockInput
 
 
-def create_app(settings=None, database=None, enable_sync=True):
+def create_app(settings=None, database=None, enable_sync=True, configuration=None):
     os.umask(0o077)
-    settings, db = settings or load_config(), database or Database()
+    configuration = configuration or (ConfigurationManager() if settings is None else None)
+    settings, db = (configuration.settings if configuration else settings), database or Database()
     sync = SyncService(settings, db)
     mcp = make_mcp(settings, db)
     mcp_app = mcp.streamable_http_app()
@@ -90,6 +93,11 @@ def create_app(settings=None, database=None, enable_sync=True):
     async def bad_input(request, error):
         return JSONResponse({"detail": str(error)}, status_code=400)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, error):
+        # FastAPI's default response includes raw input, including passwords.
+        return JSONResponse({"detail": "入力形式を確認してください。必須項目・文字数・メールアドレス・ポート番号が不正です。"}, status_code=422)
+
     @app.exception_handler(Exception)
     async def server_error(request, error):
         return JSONResponse({"detail": "Operation failed; inspect configuration/connectivity"}, status_code=500)
@@ -105,6 +113,31 @@ def create_app(settings=None, database=None, enable_sync=True):
     @app.get("/api/accounts")
     async def accounts():
         return await db.stats(settings.accounts)
+
+    def config_manager():
+        if configuration is None:
+            raise HTTPException(503, "Account management is unavailable in this embedded app")
+        return configuration
+
+    @app.get("/api/settings")
+    async def account_settings():
+        return await asyncio.to_thread(config_manager().public_state)
+
+    @app.post("/api/settings/unlock")
+    async def unlock(data: UnlockInput):
+        result = await asyncio.to_thread(config_manager().unlock, data)
+        sync.status.clear()
+        sync.wake.set()
+        return result
+
+    @app.put("/api/settings/accounts/{account_id}")
+    async def save_account(account_id: str, data: AccountInput):
+        if account_id != data.id:
+            raise HTTPException(400, "Account ID mismatch")
+        result = await asyncio.to_thread(config_manager().save_account, data)
+        sync.status.pop(account_id, None)
+        sync.wake.set()
+        return result
 
     @app.get("/api/emails")
     async def emails(query: str = Query(default="", max_length=500), account_id: str | None = None,
