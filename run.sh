@@ -24,6 +24,7 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUTF8=1
 export PYTHONPYCACHEPREFIX="$PWD/data/pycache"
 export TMPDIR="$PWD/data/tmp"
+export PATH="$PWD/data/bin:$PATH"
 mkdir -p "$TMPDIR"
 if ! command -v uv >/dev/null 2>&1; then
   echo 'uv is required. Install it locally or put the uv executable on PATH.' >&2

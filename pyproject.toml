@@ -1,12 +1,13 @@
 [project]
 name = "mcp-webmail"
-version = "0.1.0"
+version = "0.2.0"
 description = "Portable local IMAP webmail with read/draft-only MCP"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "mcp==1.26.0",
   "aiosqlite>=0.20,<1", "pydantic>=2.10,<3", "imapclient>=3.0,<4",
   "email-validator>=2.2,<3", "filelock>=3.16,<4",
+  "cryptography>=46,<51",
 ]
 
 [dependency-groups]
