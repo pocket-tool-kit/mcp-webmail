@@ -215,6 +215,37 @@ async def test_old_cache_is_rebuilt_on_upgrade(tmp_path):
     assert (await db.search())[0]["subject"] == "new"
 
 
+# A cache rebuild restarts emails.id; send records must not attach to reused ids
+async def test_send_record_survives_rebuild_without_id_collision(tmp_path):
+    path = tmp_path / "old.db"
+    async with aiosqlite.connect(path) as conn:
+        await conn.executescript(
+            "CREATE TABLE emails(id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT, folder TEXT, uid INTEGER, subject TEXT);"
+            "INSERT INTO emails VALUES(1,'work','Drafts',1,'old');"
+            "CREATE TABLE send_attempts(email_id INTEGER PRIMARY KEY, account_id TEXT NOT NULL, message_id TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(account_id,message_id));"
+            "INSERT INTO send_attempts(email_id,account_id,message_id,state) VALUES(1,'work','<sent@x>','accepted');")
+    db = Database(path)
+    await db.initialize()
+    await db.initialize()  # migration is idempotent
+    # A brand-new, never-sent draft now receives the reused id 1.
+    await db.apply_snapshot("work", "Drafts", 7, {5: False},
+                            {5: parse_mail(b"Message-ID: <new@x>\r\nSubject: new\r\n\r\n")})
+    fresh = (await db.search())[0]
+    assert fresh["id"] == 1
+    mail = await db.detail(fresh["id"])
+    assert mail["send_state"] is None
+    await db.claim_send(mail)  # must not collide with the old record
+    await db.finish_send(mail, "accepted")
+    assert (await db.detail(fresh["id"]))["send_state"] == "accepted"
+    # The old record still guards its own Message-ID (e.g. the re-synced draft).
+    await db.apply_snapshot("work", "Drafts", 7, {5: False, 6: False},
+                            {6: parse_mail(b"Message-ID: <sent@x>\r\nSubject: old\r\n\r\n")})
+    old = next(r for r in await db.search() if r["subject"] == "old")
+    assert (await db.detail(old["id"]))["send_state"] == "accepted"
+    with pytest.raises(ValueError, match="Already attempted"):
+        await db.claim_send(await db.detail(old["id"]))
+
+
 # Thread lookup (now off-loop, single detail query)
 async def test_thread_chain_and_limit(db):
     msgs = {}

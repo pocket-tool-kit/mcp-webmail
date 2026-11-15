@@ -34,11 +34,23 @@ SCHEMA = [
  account_id TEXT NOT NULL, folder TEXT NOT NULL, uidvalidity INTEGER NOT NULL,
  PRIMARY KEY(account_id, folder)
 )""",
+    # Keyed by (account_id, Message-ID) only. emails.id is NOT stable: a cache
+    # rebuild drops the table and AUTOINCREMENT restarts, so ids get reused.
+    # email_id is kept for information only.
     """CREATE TABLE IF NOT EXISTS send_attempts (
- email_id INTEGER PRIMARY KEY, account_id TEXT NOT NULL, message_id TEXT NOT NULL,
+ account_id TEXT NOT NULL, message_id TEXT NOT NULL, email_id INTEGER,
  state TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
- UNIQUE(account_id, message_id)
+ PRIMARY KEY(account_id, message_id)
 )""",
+]
+# v0.2 and earlier used email_id as the primary key.
+LEGACY_SEND_ATTEMPTS_MIGRATION = [
+    "ALTER TABLE send_attempts RENAME TO send_attempts_legacy",
+    SCHEMA[-1],
+    """INSERT OR IGNORE INTO send_attempts(account_id,message_id,email_id,state,created_at)
+ SELECT account_id,message_id,email_id,state,COALESCE(created_at,CURRENT_TIMESTAMP)
+ FROM send_attempts_legacy WHERE message_id<>''""",
+    "DROP TABLE send_attempts_legacy",
 ]
 CONTENT_COLUMNS = ["message_id", "in_reply_to", "subject", "sender", "recipients", "date_ts", "body_text",
                    "body_html", "has_attachments", "references_header", "reply_to", "oversize_limit"]
@@ -97,6 +109,10 @@ class Database:
                 exists = await (await db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='folders'")).fetchone()
                 if exists:
                     await db.execute("DELETE FROM folders")
+            columns = await (await db.execute("PRAGMA table_info(send_attempts)")).fetchall()
+            if any(c["name"] == "email_id" and c["pk"] for c in columns):
+                for statement in LEGACY_SEND_ATTEMPTS_MIGRATION:
+                    await db.execute(statement)
             for statement in SCHEMA:
                 await db.execute(statement)
             if version < SCHEMA_VERSION:
@@ -161,8 +177,8 @@ class Database:
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         return await self.rows("SELECT id,account_id,folder,uid,subject,sender,date_ts,is_seen,has_attachments,substr(body_text,1,180) AS snippet FROM emails" + where + " ORDER BY date_ts DESC,id DESC LIMIT ? OFFSET ?", (*args, limit, offset))
 
-    DETAIL_SQL = ("SELECT e.*, f.uidvalidity, (SELECT state FROM send_attempts s WHERE s.email_id=e.id OR "
-                  "(s.account_id=e.account_id AND s.message_id=e.message_id)) AS send_state "
+    DETAIL_SQL = ("SELECT e.*, f.uidvalidity, (SELECT state FROM send_attempts s WHERE e.message_id<>'' AND "
+                  "s.account_id=e.account_id AND s.message_id=e.message_id) AS send_state "
                   "FROM emails e JOIN folders f USING(account_id,folder) WHERE e.id IN ({})")
 
     async def details(self, email_ids):
@@ -208,18 +224,20 @@ class Database:
             raise ValueError("Draft has no Message-ID; create a new draft before sending")
         async with self.connect() as db:
             try:
-                await db.execute("INSERT INTO send_attempts(email_id,account_id,message_id,state) VALUES(?,?,?,'in_progress')", (mail["id"], mail["account_id"], mail["message_id"]))
+                await db.execute("INSERT INTO send_attempts(account_id,message_id,email_id,state) VALUES(?,?,?,'in_progress')", (mail["account_id"], mail["message_id"], mail["id"]))
                 await db.commit()
             except aiosqlite.IntegrityError:
                 raise ValueError("Already attempted; check Sent/server before any manual resend") from None
 
-    async def release_send(self, email_id):
+    async def release_send(self, mail):
         """Drop a claim whose SMTP transaction certainly delivered nothing."""
         async with self.connect() as db:
-            await db.execute("DELETE FROM send_attempts WHERE email_id=? AND state='in_progress'", (email_id,))
+            await db.execute("DELETE FROM send_attempts WHERE account_id=? AND message_id=? AND state='in_progress'",
+                             (mail["account_id"], mail["message_id"]))
             await db.commit()
 
-    async def finish_send(self, email_id, state):
+    async def finish_send(self, mail, state):
         async with self.connect() as db:
-            await db.execute("UPDATE send_attempts SET state=? WHERE email_id=?", (state, email_id))
+            await db.execute("UPDATE send_attempts SET state=? WHERE account_id=? AND message_id=?",
+                             (state, mail["account_id"], mail["message_id"]))
             await db.commit()

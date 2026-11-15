@@ -213,10 +213,10 @@ async def send_reviewed_draft(settings: Settings, db: Database, email_id: int):
     try:
         result = await asyncio.to_thread(smtp_send, account, raw)
     except NotSent as exc:
-        await db.release_send(email_id)
+        await db.release_send(mail)
         raise ValueError(f"Not sent: {exc}. Nothing was delivered; fix the cause and send again") from None
     except Exception:
-        await db.finish_send(email_id, "unknown")
+        await db.finish_send(mail, "unknown")
         raise ValueError("Send outcome not confirmed. Automatic retry blocked; check server/Sent before resending") from None
-    await db.finish_send(email_id, result["state"])
+    await db.finish_send(mail, result["state"])
     return result
