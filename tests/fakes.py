@@ -56,6 +56,8 @@ class FakeIMAP:
         return self.folders[self.selected]["messages"]
 
     def search(self, criteria):
+        if criteria == ["DELETED"]:
+            return sorted(uid for uid, (_, flags) in self._box().items() if b"\\Deleted" in flags)
         return sorted(self._box())
 
     def fetch(self, uids, fields):

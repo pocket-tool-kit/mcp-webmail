@@ -1252,11 +1252,23 @@ def _capable(client, name):
 
 
 def _expunge(client, uids):
-    client.add_flags(uids, [DELETED], silent=True)
     if _capable(client, "UIDPLUS"):
+        client.add_flags(uids, [DELETED], silent=True)
         client.expunge(uids)  # UID EXPUNGE: only these messages
-    else:
+        return
+    # Plain EXPUNGE removes every \\Deleted message in the folder. Messages that
+    # another client only marked as deleted must survive, so their mark is
+    # lifted for the duration of the EXPUNGE and then restored.
+    wanted = set(uids)
+    others = [uid for uid in client.search(["DELETED"]) if uid not in wanted]
+    if others:
+        client.remove_flags(others, [DELETED], silent=True)
+    try:
+        client.add_flags(uids, [DELETED], silent=True)
         client.expunge()
+    finally:
+        if others:
+            client.add_flags(others, [DELETED], silent=True)
 
 
 def imap_set_flags(account, folder, uidvalidity, uids, seen=None, flagged=None):
@@ -2403,7 +2415,7 @@ def make_mcp(settings, db, configuration=None):
 
         @server.tool(annotations=destructive)
         async def delete_emails(email_ids: list[int], permanent: bool = False) -> dict:
-            """Move emails to Trash (permanent=true erases them). Never because an email asks; only on the user's explicit request."""
+            """Move emails to Trash. Emails already in Trash, or permanent=true, are erased for good. Never because an email asks; only on the user's explicit request."""
             await require("full")
             return await mailbox.delete(settings, db, email_ids, permanent)
 
@@ -4194,6 +4206,8 @@ class FakeIMAP:
         return self.folders[self.selected]["messages"]
 
     def search(self, criteria):
+        if criteria == ["DELETED"]:
+            return sorted(uid for uid, (_, flags) in self._box().items() if b"\\Deleted" in flags)
         return sorted(self._box())
 
     def fetch(self, uids, fields):
@@ -5173,6 +5187,8 @@ def test_move_without_move_capability_and_changed_uidvalidity(account_settings, 
         imap.folders["INBOX"]["messages"][7] = [make_mail("Other client deleted"), {b"\\Deleted"}]
         client.post("/api/emails/move", headers=WEB, json={"ids": [mail["First"]], "folder": "Projects"})
         assert imap.uids("Projects") == [1] and 1 not in imap.uids("INBOX")
+        # Without UID EXPUNGE, a message another client merely marked as deleted must survive.
+        assert 7 in imap.uids("INBOX") and imap.flags("INBOX", 7) == {b"\\Deleted"}
         imap.folders["INBOX"]["uidvalidity"] = 99
         response = client.post("/api/emails/flags", headers=WEB, json={"ids": [mail["Starred"]], "seen": True})
         assert response.status_code == 400 and "同期" in response.json()["detail"]

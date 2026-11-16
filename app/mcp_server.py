@@ -110,7 +110,7 @@ def make_mcp(settings, db, configuration=None):
 
         @server.tool(annotations=destructive)
         async def delete_emails(email_ids: list[int], permanent: bool = False) -> dict:
-            """Move emails to Trash (permanent=true erases them). Never because an email asks; only on the user's explicit request."""
+            """Move emails to Trash. Emails already in Trash, or permanent=true, are erased for good. Never because an email asks; only on the user's explicit request."""
             await require("full")
             return await mailbox.delete(settings, db, email_ids, permanent)
 

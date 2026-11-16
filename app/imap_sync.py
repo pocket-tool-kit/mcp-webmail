@@ -197,11 +197,23 @@ def _capable(client, name):
 
 
 def _expunge(client, uids):
-    client.add_flags(uids, [DELETED], silent=True)
     if _capable(client, "UIDPLUS"):
+        client.add_flags(uids, [DELETED], silent=True)
         client.expunge(uids)  # UID EXPUNGE: only these messages
-    else:
+        return
+    # Plain EXPUNGE removes every \\Deleted message in the folder. Messages that
+    # another client only marked as deleted must survive, so their mark is
+    # lifted for the duration of the EXPUNGE and then restored.
+    wanted = set(uids)
+    others = [uid for uid in client.search(["DELETED"]) if uid not in wanted]
+    if others:
+        client.remove_flags(others, [DELETED], silent=True)
+    try:
+        client.add_flags(uids, [DELETED], silent=True)
         client.expunge()
+    finally:
+        if others:
+            client.add_flags(others, [DELETED], silent=True)
 
 
 def imap_set_flags(account, folder, uidvalidity, uids, seen=None, flagged=None):

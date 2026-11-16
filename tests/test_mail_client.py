@@ -119,6 +119,8 @@ def test_move_without_move_capability_and_changed_uidvalidity(account_settings, 
         imap.folders["INBOX"]["messages"][7] = [make_mail("Other client deleted"), {b"\\Deleted"}]
         client.post("/api/emails/move", headers=WEB, json={"ids": [mail["First"]], "folder": "Projects"})
         assert imap.uids("Projects") == [1] and 1 not in imap.uids("INBOX")
+        # Without UID EXPUNGE, a message another client merely marked as deleted must survive.
+        assert 7 in imap.uids("INBOX") and imap.flags("INBOX", 7) == {b"\\Deleted"}
         imap.folders["INBOX"]["uidvalidity"] = 99
         response = client.post("/api/emails/flags", headers=WEB, json={"ids": [mail["Starred"]], "seen": True})
         assert response.status_code == 400 and "同期" in response.json()["detail"]
