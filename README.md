@@ -1,127 +1,118 @@
 # MCP Webmail — Linux / WSL2 用ポータブルWebメール
 
-**v0.2ではWeb画面からアカウントを登録・編集し、メールパスワードを暗号化して保存できます。** ログイン後の「アカウント設定」で初回の暗号化設定、または起動後のロック解除を行ってください。既存インストールの更新手順と暗号化の詳細は [UPGRADE_V0_2.md](UPGRADE_V0_2.md) を参照してください。
+Python 3.11以上と `uv` で動作する、ローカル専用のメールクライアント（Web UI）兼 MCPサーバーです。
 
-下記の平文JSON例は従来形式の移行・インポート用です。v0.2では暗号化を開始するまでメールサーバーへ接続しません。暗号化後はメールパスワード・接続先の変更にWeb画面を使い、`encrypted_password` と `credential_encryption` を手動で変更しないでください。
+**v0.3** で、一般的なメールクライアントとして使える機能と、対応サービスを広げました。
 
-Python 3.11以上と `uv` で動作する、ローカル専用のIMAPメールキャッシュ／WebメールUI／MCPサーバーです。MCPでできる操作は検索・参照・下書き保存までです。送信はWeb UIで下書きを開き、宛先・本文を確認して実行します。
+- Gmail / iCloud / Microsoft 365・Outlook.com のプリセット、IMAPに加えて **POP3受信**
+- アプリパスワードと **OAuth2**（Google / Microsoft）の両対応
+- フォルダ自動検出、既読・スター・移動・アーカイブ・削除、添付の表示と送信、Cc/Bcc、全員に返信、転送、下書き編集、作成画面からの送信、送信済みへの保存
+- **スマートフォン向けレイアウト**と、Tailscale / Cloudflare Tunnel 経由の利用
+- AI（MCP）に許可する操作を **3段階から選択**
+
+既存環境の更新は [UPGRADE_V0_3.md](UPGRADE_V0_3.md)、テスト結果と未検証の範囲は [VALIDATION.md](VALIDATION.md) を参照してください。
 
 ## 構成
 
 ```text
 mcp-webmail/
 ├── app/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── account_settings.py
-│   ├── db.py
-│   ├── mail_parser.py
-│   ├── imap_sync.py
-│   ├── smtp_client.py
-│   ├── mcp_server.py
-│   └── main.py
-├── static/
-│   ├── index.html
-│   └── app.js
+│   ├── config.py            # 設定モデル
+│   ├── account_settings.py  # アカウント管理・暗号化
+│   ├── providers.py         # サービス別プリセット、OAuthエンドポイント
+│   ├── oauth.py             # OAuth2（PKCE）とXOAUTH2トークン
+│   ├── db.py                # SQLiteキャッシュ
+│   ├── mail_parser.py       # MIME解析・添付
+│   ├── imap_sync.py         # IMAP/POP3の同期とサーバー操作
+│   ├── mailbox.py           # 既読・移動・削除・添付（Web/MCP共通）
+│   ├── smtp_client.py       # 作成・下書き・送信
+│   ├── mcp_server.py        # MCPツール（権限レベル別）
+│   └── main.py              # Web API
+├── static/                  # index.html / app.css / app.js
 ├── tests/
-│   ├── conftest.py
-│   ├── test_account_settings.py
-│   ├── test_core.py
-│   ├── test_mail_servers.py
-│   └── test_transports.py
-├── data/                  # 初回起動でconfig.json/mail.db等を生成
-├── pyproject.toml
-├── uv.lock                # 依存バージョン・ハッシュを固定
-├── run.sh
-├── README.md
-└── REVIEW_GUIDE.md
+├── data/                    # 初回起動でconfig.json/mail.db等を生成
+├── pyproject.toml / uv.lock
+└── run.sh
 ```
-
-UIは3ペイン構成です。追加のJS 1ファイルとインラインCSSを使用します。Tailwind CDNは使わず、オフライン表示と厳しいContent Security Policyを優先しました。
 
 ## 起動
 
-LinuxまたはWSL2のLinuxファイルシステム上へ展開してください。WSLでは `/mnt/c` より `~/projects` 等のLinux側の任意の作業フォルダが適しています。アプリはホーム設定ディレクトリへ書き込みません。
-
-前提: Python 3.11以上、`uv`、Bash、Linuxの `readlink`、信頼済みCA証明書。`uv` がPATHにない場合は、uv実行ファイルをプロジェクト内へ配置し、そのディレクトリをPATHへ追加できます。uv自身のインストーラは本プロジェクトには含みません。
+LinuxまたはWSL2のLinuxファイルシステム上へ展開してください（WSLでは `/mnt/c` ではなく `~/` 配下）。前提は Python 3.11以上、`uv`、Bash、信頼済みCA証明書です。
 
 ```bash
 cd mcp-webmail
 bash run.sh
 ```
 
-初回に `data/config.json` を作成します。最初のサンプルアカウントは無効です。ログイン後のアカウント設定画面で暗号化設定とアカウント登録を行ってください。Webブラウザで `http://127.0.0.1:8000` を開き、起動端末に表示された **Web token** を入力します。設定ファイルの `web_token` と同じ値です。トークンはブラウザのメモリ内に保持し、localStorageやCookieに保存しません。
+1. ブラウザで `http://127.0.0.1:8000` を開き、起動端末に表示された **Web token** を入力します。
+2. 初回は設定画面が開きます。**マスターパスワード**（12文字以上）と、**AI（MCP）に許可する操作**を選びます。
+3. 「メールサービス」を選ぶとサーバー名が入力されます。メールアドレスとパスワード等を入れて保存し、「接続テスト」で確認します。
 
-起動は常に `127.0.0.1:8000`、1ワーカーです。別の端末で同時にWebサーバーを起動すると `data/web.lock` により同期処理の多重起動を拒否します。stdio MCPは別プロセスで同時起動できます。
+サーバーを再起動するとロック状態に戻ります。起動後に一度、マスターパスワードを入力してください。
 
-`run.sh` は `.venv/` に仮想環境を作成し、uvのキャッシュ・Pythonダウンロード先・一時ファイル・設定・DBを `data/` 配下に指定します。任意のカレントディレクトリから起動してもアプリの保存先は同じです。Pythonモジュールを直接起動した場合もアプリの設定・DBはモジュール位置から決まります。uvを別途直接操作する場合は、ホーム側へのuvキャッシュ作成を避けるため `run.sh` と同じ環境変数を指定してください。
+起動は常に `127.0.0.1:8000`、1ワーカーです。アプリのデータ・uvのキャッシュ・仮想環境はすべてプロジェクト配下に置き、ホームディレクトリへは書き込みません。Webサーバーの二重起動は `data/web.lock` で拒否します。
 
-## 従来形式の設定例（移行・インポート用）
+## 対応サービス
 
-実際の初回生成ファイルには、それぞれ異なるランダムトークンが入ります。以下の説明用トークンを使わず、生成されたものを保持してください。
+| サービス | 受信 | 認証 | 備考 |
+|---|---|---|---|
+| Gmail / Google Workspace | IMAP | アプリパスワード または OAuth2 | 送信済みはGmailが自動保存 |
+| iCloudメール | IMAP | アプリ用パスワード | 通常のApple Accountパスワードは不可 |
+| Microsoft 365（Exchange Online） | IMAP | OAuth2 | 管理者によるIMAP・SMTP AUTHの許可が必要 |
+| Outlook.com / Hotmail | IMAP | OAuth2 | テナントは `consumers` |
+| その他 | IMAP | パスワード | サーバー名を手入力 |
+| POP3 | POP3 | パスワード | 下記参照 |
 
-```json
-{
-  "web_token": "初回生成される32文字以上のランダム値",
-  "mcp_token": "Web用と異なる32文字以上のランダム値",
-  "sync_interval": 60,
-  "sync_batch": 100,
-  "max_message_bytes": 25000000,
-  "accounts": [
-    {
-      "id": "personal",
-      "name": "個人メール",
-      "email": "you@example.com",
-      "enabled": true,
-      "imap": {
-        "host": "imap.example.com",
-        "port": 993,
-        "username": "you@example.com",
-        "password": "APP_PASSWORD",
-        "security": "tls"
-      },
-      "smtp": {
-        "host": "smtp.example.com",
-        "port": 587,
-        "username": "you@example.com",
-        "password": "APP_PASSWORD",
-        "security": "starttls"
-      },
-      "folders": ["INBOX", "Sent"],
-      "drafts_folder": null
-    }
-  ]
-}
-```
+- 接続は TLS または STARTTLS のみです。平文認証と証明書検証の無効化は実装していません。
+- **Exchange** は Exchange Online を IMAP/SMTP + OAuth2 で利用する方式です。オンプレミスのExchange（EWS）と、Microsoft Graph API には対応していません。
+- **POP3** は受信トレイだけを取得し、**サーバー上のメールは削除しません**。下書き・送信済み・ごみ箱・アーカイブと、既読・スターの状態はこのPC内だけに保存されます（他の端末とは同期されません）。
 
-- 複数アカウントは `accounts` に追加します。`id` は一意かつ安定した値にしてください。
-- `security` は `tls`（暗黙TLS）または `starttls`。平文認証や証明書検証無効化は実装しません。
-- SMTP/IMAPパスワード認証・アプリパスワードに対応します。OAuth2専用アカウントは未対応です。
-- `folders` はサーバー上の実名を指定します。存在しない `Sent` 等を推測して設定しないでください。
-- `drafts_folder: null` は `\Drafts` SPECIAL-USEフラグを優先して検出します。なければ限定した既知名を使用します。曖昧・不明なら書き込みせずエラーになります。
-- 自動検出できない場合は、実名を指定してください。例: `"[Gmail]/下書き"`、`"INBOX.Drafts"`。IMAPClientがmodified UTF-7を処理します。
-- 下書きフォルダは自動で同期対象に追加します。フォルダの作成は行いません。
-- 設定変更後はWeb／stdio両方を再起動してください。
+### OAuth2の設定
 
-v0.2ではメールパスワードを暗号化してconfig.jsonへ保存します。`mail.db` のメール本文やメールアドレス・Web/MCPトークンは暗号化されません。Linuxでは初回ディレクトリ0700、ファイル0600／umask077を使用します。既存ファイルの権限やコピー先のACLはユーザー側で確認してください。WSLのWindowsマウントではPOSIX権限の意味が異なる場合があります。バックアップは機密情報として扱ってください。
+OAuth2を使うには、ご自身のアカウントでアプリ（OAuthクライアント）を登録し、クライアントIDを設定画面に入力します。
+
+1. アプリを登録し、リダイレクトURIに `http://localhost:8000/oauth/callback` を指定します。
+   - **Google**: Google Cloud コンソールでGmail APIを有効化し、OAuthクライアント（種類: デスクトップアプリ）を作成。クライアントIDとシークレットを入力します。スコープは `https://mail.google.com/` です。
+   - **Microsoft**: Microsoft Entra 管理センターでアプリを登録し、「モバイルとデスクトップ アプリケーション」のリダイレクトURIに上記を追加。APIのアクセス許可に `IMAP.AccessAsUser.All` `SMTP.Send` `offline_access` を追加します。シークレットは不要です。
+2. 設定画面で認証方式を「OAuth2」にして保存し、「サインイン」→「サインインページを開く」で認証します。
+3. 完了すると自動で同期が始まります。
+
+サインインは**サーバーを動かしているPC上のブラウザ**で行ってください（リダイレクト先がlocalhostのため）。リフレッシュトークンは暗号化して `data/config.json` に保存し、アクセストークンはメモリ内だけに保持します。
+
+## スマートフォン・外出先からの利用
+
+画面幅800px以下では、フォルダ一覧（ドロワー）・メール一覧・本文を1画面ずつ切り替えるレイアウトになります。ログイン画面の「この端末に記憶する」をオンにすると、Webトークンをそのブラウザに保存します（共有端末では使わないでください）。
+
+サーバーは `127.0.0.1` でしか待ち受けません。別の端末から使うときは、同じPC上の中継ソフトから転送します。
+
+1. 設定画面の「外部からアクセスするホスト名」に、アクセスに使う名前を登録します（例: `pc.tailnet-name.ts.net`）。登録していない名前でのアクセスは拒否します。
+2. 中継を起動します。
+   - Tailscale: `tailscale serve --bg 8000`
+   - Cloudflare Tunnel: `cloudflared tunnel --url http://127.0.0.1:8000`（または名前付きトンネル）
+
+- **Tailscale** は自分の端末だけが届くため、こちらを推奨します。
+- **Cloudflare Tunnel** はインターネットに公開されます。必ず Cloudflare Access などの前段認証を併用してください。Webトークンは推測できない長さですが、漏れた場合はメールの閲覧・送信・削除がすべて可能になります。
+- MCPのHTTP接続（`/mcp`）は、引き続きローカル（127.0.0.1 / localhost）からのみ利用できます。
 
 ## MCP接続
 
+### 許可する操作（権限レベル）
+
+初回設定または設定画面の「全般」で選びます。MCP側からは変更できません。
+
+| レベル | 使えるツール |
+|---|---|
+| 閲覧と下書きのみ（既定） | `list_accounts` `search_emails` `get_email_detail` `get_thread` `create_draft` |
+| ＋整理 | 上記 ＋ `mark_emails`（既読・スター） `move_emails` `archive_emails` |
+| ＋送信・削除 | 上記 ＋ `delete_emails` `send_draft` |
+
+- 権限を**広げた**ときは、Webサーバーとstdio MCPを再起動すると新しいツールが現れます。**狭めた**ときは即時に効きます。
+- `send_draft` は既存の下書きを1回だけ送信します。`delete_emails` は既定でごみ箱へ移動します。
+- メール本文は未信頼データとしてタグで囲んで返しますが、プロンプトインジェクションを完全には防げません。「送信・削除」を許可すると、メールに仕込まれた指示でAIが誤操作するリスクが上がります。必要なときだけ有効にしてください。
+
+Resources: `mail://accounts`、`mail://emails/{email_id}`。
+
 ### stdio
-
-依存導入後、プロジェクトルートで次を実行できます。
-
-```bash
-.venv/bin/python -m app.mcp_server
-```
-
-要求された `python -m app.mcp_server` も、仮想環境を有効化した状態で利用できます。初回セットアップも含める場合:
-
-```bash
-bash run.sh --stdio
-```
-
-汎用MCPクライアント設定例（パスはコピー先に合わせてください）:
 
 ```json
 {
@@ -134,100 +125,55 @@ bash run.sh --stdio
 }
 ```
 
-Windows側のクライアントからWSL内へ接続する例:
+Windows側のクライアントからWSLへ接続する場合は `"command": "wsl.exe"`、`"args": ["-d", "Ubuntu", "--", "bash", "/absolute/linux/path/mcp-webmail/run.sh", "--stdio"]` とします。
 
-```json
-{
-  "mcpServers": {
-    "portable-webmail": {
-      "command": "wsl.exe",
-      "args": ["-d", "Ubuntu", "--", "bash", "/absolute/linux/path/mcp-webmail/run.sh", "--stdio"]
-    }
-  }
-}
-```
-
-stdioはOSプロセス境界で認可され、トークンは使いません。標準出力はMCP通信用です。キャッシュを読むだけなので、最新メールを取得するにはWeb側も起動してください。
+stdioはキャッシュを読むため、最新のメールを取得するにはWeb側も起動しておきます。下書き保存や整理・送信などサーバーへ接続する操作には、環境変数 `WEBMAIL_MASTER_PASSWORD` でのロック解除が必要です。
 
 ### Streamable HTTP
 
-Web起動中の `http://127.0.0.1:8000/mcp` に接続します。末尾スラッシュ不要です。
+Web起動中の `http://127.0.0.1:8000/mcp` に接続します。
 
 ```text
 Authorization: Bearer <data/config.json の mcp_token>
 Accept: application/json, text/event-stream
 ```
 
-MCP SDK 1.26.0を固定しています。FastAPI親アプリのlifespanで `mcp.session_manager.run()` を管理し、SDK内の `/mcp` ルートをrootへマウントしています。通信方式は **stdio + Streamable HTTP** の2種類です。旧式の独立した `/sse` エンドポイントは実装していません。
+MCP SDK 1.26.0固定、通信方式は stdio と Streamable HTTP の2種類です。WebトークンとMCPトークンは別で、MCPトークンではWeb APIや設定を操作できません。
 
-認証ヘッダーを設定できるStreamable HTTP対応クライアントを使用してください。これはローカル固定トークン方式で、公開リモートMCP向けのOAuth認証サーバーではありません。
+## Web UIの機能
 
-| Tool | 引数 | 動作 |
-|---|---|---|
-| list_accounts | なし | アカウント情報、ローカル未読数／総数 |
-| search_emails | query, account_id?, limit=20 | 件名・送信者・本文の文字列検索（上限200） |
-| get_email_detail | email_id | 本文テキストとヘッダー |
-| get_thread | email_id | 同一アカウントの関連メールを時系列表示 |
-| create_draft | account_id, to: string[], subject, body, reply_to_email_id? | IMAP APPENDで下書き保存 |
+- **一覧**: 検索（件名・差出人・宛先・本文）、未読／スター／添付での絞り込み、複数選択での一括操作。
+- **閲覧**: テキスト表示が既定。HTML表示は隔離したiframe内で行い、スクリプトと外部画像・外部通信を遮断します（メールに添付された画像は表示）。開いたメールは既読にします（設定でオフにできます）。
+- **添付**: ダウンロードのみ。ブラウザ内では開きません。
+- **作成**: 宛先・Cc・Bcc、添付、署名、返信・全員に返信・転送。下書きは保存後に編集できます。
+- **送信**: 作成画面の「送信」、または下書きを開いて「確認して送信」。どちらも宛先の確認ダイアログを経ます。
+- **整理**: 既読／未読、スター、アーカイブ、フォルダ移動、削除（ごみ箱へ。ごみ箱内では完全削除）。
 
-Resources: `mail://accounts`、`mail://emails/{email_id}`。
+### 送信の安全策
 
-**send_emailツールは存在しません。** MCPとWebは別トークンを要求し、MCPトークンではREST送信APIを利用できません。メール由来のヘッダー・本文・検索結果をすべて未信頼データとしてラップし、区切りタグをエスケープします。ただしタグ付けはプロンプトインジェクションを完全に防ぐ仕組みではありません。LLMへWebトークン、設定ファイル、任意のシェル／ブラウザ操作権限も与えた場合、このMCPツール境界の外で送信できるため、OS全体の隔離は保証しません。
+- 下書きから送る場合は、送信直前にサーバー上の下書きを再取得し、表示した内容（宛先・本文・添付）と一致するときだけ送信します。
+- 送信権をMessage-ID単位でSQLiteに記録してからSMTP通信を始めるため、二重クリックや再実行で同じメールを重複送信しません。
+- 結果は `accepted`（全宛先を受付）、`partial`（一部拒否）、`unknown`（結果を確定できない）のいずれかです。接続・認証の失敗やサーバーの明示的な拒否は「未送信」と確定できるため再送できますが、`unknown` の場合は自動再送しません。サーバーの送信済みを確認してください。
+- 送信後は送信済みフォルダへ保存し、元の下書きを削除します（GmailとMicrosoftはサーバーが自動保存するため保存を省略）。これらに失敗しても送信結果は変わらず、画面に警告を表示します。
+- 送信元は設定したアカウントのアドレスに限定します。
 
-## Web UIと送信
+## データ・同期
 
-1. 左側でアカウント／フォルダを選択、中央で検索・メール選択。
-2. 右側でテキスト本文を確認。HTMLは明示的に切り替えて表示。
-3. 新規作成／返信は下書きを保存します。宛先はカンマ区切りのメールアドレスのみです。
-4. 同期後、下書きフォルダを開き、宛先（To/Cc/Bcc）・件名・本文を確認します。
-5. 「確認して送信」を押して確認ダイアログを承認します。
-
-HTMLは `iframe sandbox=""` と `srcdoc` 内へ隔離します。スクリプト・ナビゲーション要素を除去し、iframe内部のCSPで外部画像／CSS／通信をブロックします。親画面ではメールをtextContentで表示します。外部CDNのスクリプトは読み込みません。
-
-送信時には実際の下書きフォルダ・UIDVALIDITY・本文・宛先等をIMAPから再確認します。別のメールや変更された下書きを送信しません。送信権をSQLiteへ一意に記録してからSMTP通信を開始するため、同時クリックや別ワーカーからの同じMessage-IDの再送を抑止します。
-
-- `accepted`: SMTPサーバーが全宛先を受け付けた状態。最終配送成功とは異なります。
-- `partial`: 一部宛先を拒否。成功した宛先の重複送信を避けるため自動再送しません。
-- `unknown`: エラー等で結果を確定できません。サーバー上の状態を確認してください。
-- `in_progress`: 送信実行中、またはプロセス停止等で結果保存前。自動再送はしません。
-
-宛先・送信元等の検証は送信権の取得前に行います。SMTP接続・TLS・認証の失敗、およびサーバーが明示的に拒否した場合（全宛先拒否・送信者拒否・DATA拒否）は「未送信」が確定しているため送信権を解放し、原因を直した後に同じ下書きを再送できます。DATA送信中の切断・タイムアウトなど結果が確定できない場合のみ `unknown` になります。
-
-確認画面の宛先表示と実際のSMTPエンベロープは同じ宛先パーサーで作成します（RFC 2047表示名はアドレス解析後にデコード）。送信時のSMTPポリシーでの解析結果と一致しない下書きは送信を拒否します。
-
-SMTPとSQLiteを跨ぐ厳密なexactly-once送信は保証できません。この実装は不確実な場合に再送を止める保守的方式です。確認後に必要なら、別クライアントで状態を確認して新しい下書きを作成してください。本文内容を同じにして別Message-IDで新規作成したメールまでは重複検出しません。
-
-送信後のDrafts削除やSentへのAPPENDは行いません。プロバイダーによるSent自動保存の有無を確認してください。送信済みの元下書きはローカル送信記録により再送不可となります。
-
-## DB・同期
-
-指定の `emails` カラム／UNIQUE制約に加え、`is_seen`、`references_header`、`reply_to` を持ちます。`folders` がUIDVALIDITY、`send_attempts` が送信状態を管理します。
-
-- WAL（DBファイルに永続）とbusy_timeout=5000msを使用します。
-- キャッシュ形式は `PRAGMA user_version` で管理します。メール解析方式が変わった版で起動すると、`emails`／`folders` キャッシュを破棄してIMAPから再取得します（`send_attempts` の送信記録は保持）。
-- 1アカウントにつき1同期周期で1回だけIMAPログインし、全フォルダを処理します。フォルダ単位でエラーを分離し、1フォルダの失敗（存在しない・取得エラー）で他のフォルダの同期は止まりません。エラーは「認証失敗」「TLS証明書エラー」等の分類で表示し、サーバー応答文は表示しません。
-- 解析中に例外を起こす壊れたメールはプレースホルダーとして保存し、以後の同期を妨げません。通信エラーはプレースホルダー化せず次周期で再試行します。
-- 既読フラグは変化した行だけを書き込みます。FLAGSの取得はフォルダ全体を対象にします（CONDSTORE差分同期は未実装）。
-- ネットワーク通信中はDBトランザクションを保持しません。
-- フォルダ単位の短い書き込みトランザクション内でUIDVALIDITYリセット・削除反映・既読フラグ更新・新着挿入を行います。
-- IMAPの読み取りはreadonly SELECTとBODY.PEEKを使用し、閲覧で既読フラグを変更しません。
-- 新しいUIDから1フォルダあたり最大sync_batch件を取得します。初回大量メールの取り込みには複数同期周期が必要です。
-- 件数はサーバー全体の件数ではなく、取り込み済みローカルキャッシュの件数です。
-- 大きすぎるメッセージはプレースホルダーを保存して、過大メールによる取り込み停止を避けます。`max_message_bytes` を引き上げると、それ以前の上限で保存したプレースホルダーは次の同期で自動的に再取得されます。
-- 日本語: ISO-2022-JPのNEC特殊文字（①、㈱など、Outlook等のCP50220相当）、半角カナ、生8bitヘッダー（Shift_JIS等）、charset未指定のEUC-JP、iso-8859-1と誤宣言されたShift_JISを復号します。
-- スレッドはMessage-ID／In-Reply-To／Referencesを辿り、同一アカウント内で最大500件。ヘッダーがない場合や未同期メールは追跡できません。
-- 検索はLIKEのリテラル部分一致で、SQLはパラメータ化。大規模メールボックス向け全文索引は未実装です。
-
-WALのためDBはローカルファイルシステムへ置いてください。NFS／SMB等での動作は想定しません。WSL2では `/mnt/c` などWindowsドライブ（DrvFs／9P）上ではSQLite WALの共有メモリとファイルロックが不安定になり得るため、`~/` などLinux側へコピーして実行してください。`run.sh` は `/mnt/<ドライブ>/` 配下での起動時に警告を表示します。Webサーバーを二重起動した場合は `data/web.lock` を示すエラーで停止します。
+- メールは `data/mail.db`（SQLite、WAL）にキャッシュします。件数はサーバー全体ではなく取り込み済みの件数です。
+- IMAPは1周期につき1アカウント1回ログインし、フォルダ単位でエラーを分離します。新しいメールから1フォルダあたり最大 `sync_batch` 件ずつ取り込みます。
+- 「サーバーの全フォルダを同期」では、選択できないフォルダと、全メールが重複するGmailの「すべてのメール」を除いて同期します。
+- 下書き・送信済み・ごみ箱・アーカイブ・迷惑メールは、SPECIAL-USE属性、次に一意に決まる既知の名前で判定します。判定できない場合は設定画面で指定できます。
+- 既読・移動・削除はサーバーを先に変更してからキャッシュへ反映します。UIDVALIDITYが変わっていた場合は操作を中止します。
+- 暗号化されるのはメールパスワードとOAuthトークンだけです。`mail.db` の本文、メールアドレス、Web/MCPトークンは暗号化されません。`data/` は0700、ファイルは0600で作成します。バックアップは機密情報として扱ってください。
+- 日本語: ISO-2022-JP（NEC特殊文字を含む）、Shift_JIS、EUC-JP、誤ったcharset宣言を復号します。
+- WALのためDBはローカルファイルシステムに置いてください。NFS／SMB、WSLの `/mnt/c` は非対応です。
 
 ## 移行・バックアップ
 
 1. Webプロセスと全stdio MCPプロセスを停止します。
-2. プロジェクト全体、または `data/` 全体をコピーします。`mail.db-wal` / `mail.db-shm` が残っていれば同時に含め、`mail.db` だけを稼働中にコピーしないでください。
-3. 移行先で `bash run.sh` を実行します。場所が変わると生成物 `.venv` を作り直します。Python環境の再構築に初回ネットワーク接続が必要な場合があります。
-4. MCPクライアントの外部設定に書かれた起動パスを更新します。
-
-アカウント・メール・送信履歴は `data/` に完結します。`data/uv-cache` 等のキャッシュは停止中に省略できますが、`config.json`、`mail.db`関連ファイルは保持してください。Windows仮想環境をLinuxへそのまま流用する方式ではありません。
+2. プロジェクト全体、または `data/` 全体をコピーします（`mail.db-wal` / `mail.db-shm` も一緒に）。
+3. 移行先で `bash run.sh` を実行します。場所が変わると `.venv` を作り直します。
+4. MCPクライアント設定の起動パスを更新します。
 
 ## 検証
 
@@ -235,17 +181,13 @@ WALのためDBはローカルファイルシステムへ置いてください。
 bash run.sh --test
 ```
 
-テストは実アカウントへ接続・送信しません。SQLite複数プロセスアクセス、日本語MIME、UIDVALIDITY変更、下書きAPPEND、Bcc除去、SMTP部分拒否／結果不明時の再送防止、Web認証・Origin・Host、実stdioサブプロセスとHTTP MCP通信を検証します。
+テストは実アカウントへ接続・送信しません。詳細は [VALIDATION.md](VALIDATION.md) を参照してください。
 
-開発時の実行結果と制約は `VALIDATION.md` を参照してください。
+## 未対応・制約
 
-## 初版の範囲
-
-- 添付ファイルの有無を検出しますが、アップロード／ダウンロード／内容確認のUIはありません。添付付き下書きはWeb／RESTとも送信を拒否します。
-- 下書き編集・削除、メール削除・移動、既読変更、OAuth2、IDLE常時接続、CONDSTORE差分同期、全文索引は未実装です。DBの過去版はキャッシュ再構築で移行します。
-- 送信元は設定アカウントのアドレスに限定し、Resentヘッダーと重複宛先ヘッダーを拒否します。国際化ローカルパートを持つ宛先（SMTPUTF8）は対象外です。
-- サーバー切断時のAPPEND結果が不明な場合も自動再試行しません。下書きが存在するか先に確認してください。
-
-## 実装参照
-
-MCPの親ASGIアプリでのlifespan管理は[公式SDKのASGI統合資料](https://py.sdk.modelcontextprotocol.io/run/asgi/)を確認し、実装APIは固定した[SDK v1.26.0 FastMCPソース](https://github.com/modelcontextprotocol/python-sdk/blob/v1.26.0/src/mcp/server/fastmcp/server.py)に合わせています。
+- オンプレミスExchange（EWS）、Microsoft Graph、POP3でのOAuth2。
+- HTMLメールの作成、アドレス帳・宛先の入力補完、振り分けルール、複数の差出人アドレス。
+- IDLEによる即時受信とCONDSTORE差分同期（`sync_interval` 秒ごとの定期同期です）。全文検索は部分一致のため、大量のメールでは遅くなります。
+- フォルダの作成・名前変更・削除。
+- 国際化ローカルパートを持つ宛先（SMTPUTF8）。
+- 送信結果が `unknown` になったメールの自動再送、送信済み保存の再試行。

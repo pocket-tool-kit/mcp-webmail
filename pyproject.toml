@@ -1,7 +1,7 @@
 [project]
 name = "mcp-webmail"
-version = "0.2.0"
-description = "Portable local IMAP webmail with read/draft-only MCP"
+version = "0.3.0"
+description = "Portable local IMAP/POP3 webmail with permission-gated MCP"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "mcp==1.26.0",

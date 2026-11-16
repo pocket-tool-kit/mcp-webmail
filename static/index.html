@@ -2,61 +2,138 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#172b4d">
   <title>Portable Webmail</title>
-  <style>
-    :root{font-family:system-ui,sans-serif;color:#1c2a40;background:#eef2f7}*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit}button{cursor:pointer;background:#fff;border:1px solid #c8d3e1;border-radius:7px;padding:9px 12px;color:#203c61}button:hover{background:#e9f1ff}button:disabled{opacity:.45;cursor:default}.primary{background:#245dc1;color:white}.primary:hover{background:#174a9f}input,textarea,select{width:100%;border:1px solid #b6c4d6;border-radius:6px;padding:10px;background:white}textarea{min-height:240px;resize:vertical}header{display:flex;align-items:center;gap:12px;padding:16px 22px;background:#172b4d;color:white}header h1{font-size:19px;margin:0;flex:1}small{font-size:12px;color:#67758b}.panes{display:grid;grid-template-columns:235px minmax(280px,360px) minmax(300px,1fr);height:calc(100vh - 116px)}nav,.list,.preview{overflow:auto;border-right:1px solid #d7e0eb;background:white}nav{background:#f6f8fc;padding:16px}.account{padding:18px 4px 6px;font-weight:700}.folder{display:block;width:100%;text-align:left;margin:5px 0;overflow-wrap:anywhere}.active{background:#dce9ff}.toolbar{padding:14px;display:flex;gap:8px;border-bottom:1px solid #d7e0eb}.mail{display:block;border:0;border-bottom:1px solid #e7edf5;border-radius:0;width:100%;text-align:left;padding:16px}.mail strong,.mail span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mail span{font-size:13px;color:#68788e;margin-top:6px}.unread strong:before{content:'● ';color:#3576da}.preview{padding:24px}.preview h2{overflow-wrap:anywhere;margin-top:0}.meta{white-space:pre-wrap;overflow-wrap:anywhere;color:#56677f;font-size:13px;line-height:1.7}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}pre{font:14px/1.8 system-ui,sans-serif;white-space:pre-wrap;overflow-wrap:anywhere}iframe{width:100%;height:65vh;border:1px solid #d7e0eb;background:white}#status{padding:9px 22px;min-height:42px;font-size:13px;background:#e7edf7;overflow-wrap:anywhere}.error{color:#a2222b}dialog{width:min(720px,95vw);border:1px solid #c5d1e3;border-radius:12px;padding:25px;max-height:90vh}dialog::backdrop{background:#152a4890}label{display:block;margin-bottom:14px;font-size:13px}label input,label select,label textarea{margin-top:6px}.row{display:flex;gap:10px;justify-content:flex-end}.empty{color:#71829a;padding:30px}.login{max-width:520px}.hidden{display:none!important}#more{margin:12px;width:calc(100% - 24px)}@media(max-width:1000px){.panes{grid-template-columns:185px 280px minmax(300px,1fr);overflow:auto}}@media(max-width:700px){.panes{display:block;height:auto}nav{max-height:220px}.list{max-height:340px}.preview{min-height:400px}header{flex-wrap:wrap}}
-  </style>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
 </head>
-<body>
-<header><h1>✉ Portable Webmail</h1><button id="account-settings">アカウント設定</button><button id="compose">新規作成</button><button id="sync">同期</button><button id="logout">ログアウト</button></header>
+<body class="view-list">
+<header>
+  <button id="menu" class="icon only-mobile" aria-label="フォルダ一覧">☰</button>
+  <button id="back" class="icon only-mobile" aria-label="一覧に戻る">←</button>
+  <h1 id="title">Portable Webmail</h1>
+  <button id="compose" class="primary">✎ <span class="label">作成</span></button>
+  <button id="sync" aria-label="同期">⟳ <span class="label">同期</span></button>
+  <button id="account-settings" aria-label="設定">⚙ <span class="label">設定</span></button>
+  <button id="logout" aria-label="ログアウト">⏻ <span class="label">ログアウト</span></button>
+</header>
 <div id="status" role="status" aria-live="polite">ログインしてください。</div>
 <main class="panes">
-  <nav aria-label="アカウントとフォルダ"><button id="all" class="folder">すべてのアカウント</button><div id="accounts"></div></nav>
-  <section class="list" aria-label="メール一覧"><form class="toolbar" id="search-form"><input id="query" aria-label="メール検索" placeholder="件名・送信者・本文を検索" maxlength="500"><button>検索</button></form><div id="messages"></div><button id="more" class="hidden">さらに表示</button></section>
+  <div id="scrim"></div>
+  <nav id="nav" aria-label="アカウントとフォルダ"><button id="all" class="folder">📥 すべてのメール</button><div id="accounts"></div></nav>
+  <section class="list" aria-label="メール一覧">
+    <form class="toolbar" id="search-form"><input id="query" type="search" aria-label="メール検索" placeholder="件名・差出人・宛先・本文を検索" maxlength="500"><button>検索</button></form>
+    <div class="filters">
+      <label class="chip"><input type="checkbox" id="filter-unread"> 未読</label>
+      <label class="chip"><input type="checkbox" id="filter-flagged"> ★</label>
+      <label class="chip"><input type="checkbox" id="filter-attachments"> 📎 添付</label>
+      <label class="chip"><input type="checkbox" id="select-all"> 全選択</label>
+    </div>
+    <div class="bulk hidden" id="bulk" role="toolbar" aria-label="選択したメールの操作">
+      <span id="bulk-count"></span>
+      <button data-bulk="read">既読</button><button data-bulk="unread">未読</button><button data-bulk="star">★</button>
+      <button data-bulk="archive">アーカイブ</button><button data-bulk="move">移動</button><button data-bulk="delete" class="danger">削除</button>
+    </div>
+    <div id="messages"></div><button id="more" class="hidden">さらに表示</button>
+  </section>
   <article class="preview" id="preview"><div class="empty">メールを選択してください。</div></article>
 </main>
-<dialog id="login" class="login"><h2>ローカルメールに接続</h2><p>起動端末または data/config.json の web_token を入力してください。トークンはこの画面のメモリ内だけに保持します。</p><form id="login-form"><label>Webトークン<input id="token" type="password" autocomplete="off" required></label><p id="login-error" class="error"></p><button class="primary">接続</button></form></dialog>
-<dialog id="editor"><form id="draft-form"><h2 id="editor-title">下書きを作成</h2><label>送信元アカウント<select id="draft-account" required></select></label><label>宛先（メールアドレスをカンマ区切り）<input id="draft-to" required></label><label>件名<input id="draft-subject" maxlength="998"></label><label>本文<textarea id="draft-body" maxlength="1000000"></textarea></label><p>IMAPの下書きに保存します。同期後に内容を開いて確認すると送信できます。</p><p id="draft-error" class="error"></p><div class="row"><button type="button" id="cancel-draft">閉じる</button><button class="primary" id="save-draft">下書きを保存</button></div></form></dialog>
+
+<dialog id="login" class="narrow"><h2>ローカルメールに接続</h2><p>起動端末または data/config.json の web_token を入力してください。</p><form id="login-form"><label>Webトークン<input id="token" type="password" autocomplete="off" required></label><label class="check"><input id="remember-token" type="checkbox"> この端末に記憶する（共有端末では使わないでください）</label><p id="login-error" class="error"></p><button class="primary">接続</button></form></dialog>
+
+<dialog id="editor"><form id="draft-form">
+  <h2 id="editor-title">メールを作成</h2>
+  <label>差出人<select id="draft-account" required></select></label>
+  <label>宛先（カンマ区切り）<input id="draft-to" type="text" inputmode="email" autocapitalize="off" autocomplete="off"></label>
+  <label>Cc<input id="draft-cc" type="text" inputmode="email" autocapitalize="off" autocomplete="off"></label>
+  <label>Bcc<input id="draft-bcc" type="text" inputmode="email" autocapitalize="off" autocomplete="off"></label>
+  <label>件名<input id="draft-subject" maxlength="998"></label>
+  <label>本文<textarea id="draft-body" maxlength="1000000"></textarea></label>
+  <label>添付ファイルを追加<input id="draft-files" type="file" multiple></label>
+  <div id="draft-attachments" class="attachments"></div>
+  <p id="draft-error" class="error" role="alert"></p>
+  <div class="row"><button type="button" id="cancel-draft">閉じる</button><button type="button" id="save-draft">下書き保存</button><button class="primary" id="send-draft">送信</button></div>
+</form></dialog>
+
+<dialog id="move-dialog" class="narrow"><h2>移動先フォルダ</h2><div id="move-list"></div><div class="row"><button id="cancel-move" type="button">キャンセル</button></div></dialog>
+
 <dialog id="settings-dialog" aria-labelledby="settings-title">
-  <h2 id="settings-title">アカウント設定</h2>
+  <h2 id="settings-title">設定</h2>
   <p id="vault-status" role="status"></p>
   <form id="unlock-form">
     <p id="vault-help"></p>
     <label>マスターパスワード<input id="master-password" type="password" autocomplete="off" maxlength="1024" required></label>
     <label id="master-confirm-label">マスターパスワード（確認）<input id="master-confirm" type="password" autocomplete="off" maxlength="1024"></label>
+    <label id="initial-mcp-label">AI（MCP）に許可する操作
+      <select id="initial-mcp"><option value="read_draft">閲覧と下書き作成のみ（推奨）</option><option value="organize">＋ 既読・スター・移動・アーカイブ</option><option value="full">＋ 送信・削除（すべて許可）</option></select>
+    </label>
     <button id="unlock-button" class="primary">ロック解除</button>
-    <p>マスターパスワードは保存されません。忘れると保存済みのメールパスワードを復号できません。Webトークンとは別の値を設定してください。</p>
+    <p class="hint">マスターパスワードは保存されません。忘れると保存済みのメールパスワードを復号できません。Webトークンとは別の値を設定してください。</p>
   </form>
   <p id="settings-error" class="error" role="alert"></p>
-  <form id="account-form">
-    <fieldset id="account-fields" disabled>
-      <legend>メールアカウントの登録・編集</legend>
-      <label>編集するアカウント<select id="account-choice"><option value="">新しく登録する</option></select></label>
-      <label>アカウントID（英数字・ハイフン・アンダースコア）<input id="account-id" pattern="[a-zA-Z0-9_-]{1,64}" maxlength="64" required></label>
-      <label>表示名<input id="account-name" maxlength="100" required></label>
-      <label>メールアドレス<input id="account-email" type="email" required></label>
-      <label><input id="account-enabled" type="checkbox" style="width:auto" checked> このアカウントの同期を有効にする</label>
-      <h3>受信サーバー（IMAP）</h3>
-      <label>IMAPサーバー<input id="imap-host" maxlength="253" placeholder="imap.example.com" required></label>
-      <label>ポート<input id="imap-port" type="number" min="1" max="65535" value="993" required></label>
-      <label>接続方式<select id="imap-security"><option value="tls">TLS（通常993）</option><option value="starttls">STARTTLS（通常143）</option></select></label>
-      <label>ユーザー名<input id="imap-username" maxlength="500" autocomplete="off" required></label>
-      <label>IMAPパスワード<input id="imap-password" type="password" autocomplete="new-password" maxlength="4096" placeholder="変更しない場合は空欄"></label>
-      <h3>送信サーバー（SMTP）</h3>
-      <label>SMTPサーバー<input id="smtp-host" maxlength="253" placeholder="smtp.example.com" required></label>
-      <label>ポート<input id="smtp-port" type="number" min="1" max="65535" value="465" required></label>
-      <label>接続方式<select id="smtp-security"><option value="tls">TLS（通常465）</option><option value="starttls">STARTTLS（通常587）</option></select></label>
-      <label>ユーザー名<input id="smtp-username" maxlength="500" autocomplete="off" required></label>
-      <label>SMTPパスワード<input id="smtp-password" type="password" autocomplete="new-password" maxlength="4096" placeholder="変更しない場合は空欄"></label>
-      <label>同期フォルダ（1行に1つ）<textarea id="account-folders" style="min-height:80px" required>INBOX</textarea></label>
-      <label>下書きフォルダ（空欄で自動検出）<input id="account-drafts"></label>
-      <p>パスワードは暗号化して保存します。登録済みの値は画面に表示しません。接続先を変更する際はメールサービスの正しいサーバー名を確認してください。</p>
-      <button id="save-account" class="primary">暗号化して保存</button>
-    </fieldset>
-  </form>
-  <p>暗号化の対象はメールパスワードです。メール本文のDB、サーバー名、メールアドレス、Web/MCPトークンは暗号化されません。以前作成したconfig.json.bak等の平文バックアップは自動削除しません。</p>
+
+  <form id="general-form"><fieldset id="general-fields" disabled>
+    <legend>全般</legend>
+    <label>AI（MCP）に許可する操作
+      <select id="general-mcp"><option value="read_draft">閲覧と下書き作成のみ</option><option value="organize">＋ 既読・スター・移動・アーカイブ</option><option value="full">＋ 送信・削除（すべて許可）</option></select>
+    </label>
+    <p class="hint">権限を広げた場合は、Webサーバーとstdio MCPを再起動すると新しいツールが使えるようになります。狭めた場合は即時に反映されます。「送信・削除」を許可すると、メール本文に仕込まれた指示（プロンプトインジェクション）による誤操作のリスクが高まります。</p>
+    <label class="check"><input id="general-markread" type="checkbox"> メールを開いたら既読にする</label>
+    <label>外部からアクセスするホスト名（1行に1つ。Tailscale / Cloudflare Tunnel など）<textarea id="general-hosts" class="small" placeholder="pc.tailnet-name.ts.net" autocapitalize="off"></textarea></label>
+    <button class="primary" id="save-general">全般設定を保存</button>
+  </fieldset></form>
+
+  <form id="account-form"><fieldset id="account-fields" disabled>
+    <legend>メールアカウントの登録・編集</legend>
+    <label>編集するアカウント<select id="account-choice"><option value="">新しく登録する</option></select></label>
+    <label>メールサービス<select id="account-provider"></select></label>
+    <p id="provider-note" class="hint"></p>
+    <label>アカウントID（英数字・ハイフン・アンダースコア）<input id="account-id" pattern="[a-zA-Z0-9_\-]{1,64}" maxlength="64" autocapitalize="off" required></label>
+    <label>表示名（一覧用）<input id="account-name" maxlength="100" required></label>
+    <label>メールアドレス<input id="account-email" type="email" autocapitalize="off" required></label>
+    <label>差出人名（相手に表示される名前。空欄可）<input id="account-display" maxlength="100"></label>
+    <label class="check"><input id="account-enabled" type="checkbox" checked> このアカウントの同期を有効にする</label>
+    <label>認証方式<select id="account-auth"><option value="password">パスワード／アプリパスワード</option><option value="oauth2">OAuth2（Google / Microsoft）</option></select></label>
+    <div id="oauth-fields" class="group hidden">
+      <label>OAuthプロバイダー<select id="oauth-provider"><option value="google">Google</option><option value="microsoft">Microsoft</option></select></label>
+      <label>クライアントID<input id="oauth-client-id" maxlength="300" autocapitalize="off" autocomplete="off"></label>
+      <label>クライアントシークレット（Googleは必要。Microsoftの公開クライアントは空欄）<input id="oauth-client-secret" type="password" autocomplete="new-password" maxlength="4096"></label>
+      <label>テナント（Microsoftのみ。common / consumers / organizations / テナントID）<input id="oauth-tenant" maxlength="100" value="common" autocapitalize="off"></label>
+      <p class="hint">アプリ登録のリダイレクトURIには <code>http://localhost:8000/oauth/callback</code> を指定してください。保存後に「サインイン」を押します（サーバーを動かしているPCのブラウザで行ってください）。</p>
+      <p id="oauth-status"></p>
+      <div class="row left"><button type="button" id="oauth-signin">サインイン</button><a id="oauth-link" class="hidden" target="_blank" rel="noopener noreferrer">サインインページを開く ↗</a></div>
+    </div>
+    <h3>受信サーバー</h3>
+    <label>方式<select id="account-protocol"><option value="imap">IMAP</option><option value="pop3">POP3</option></select></label>
+    <label>サーバー<input id="imap-host" maxlength="253" placeholder="imap.example.com" autocapitalize="off" required></label>
+    <label>ポート<input id="imap-port" type="number" min="1" max="65535" value="993" required></label>
+    <label>接続方式<select id="imap-security"><option value="tls">TLS（IMAP 993 / POP3 995）</option><option value="starttls">STARTTLS（IMAP 143 / POP3 110）</option></select></label>
+    <label>ユーザー名<input id="imap-username" maxlength="500" autocomplete="off" autocapitalize="off" required></label>
+    <label class="password-field">パスワード<input id="imap-password" type="password" autocomplete="new-password" maxlength="4096"></label>
+    <h3>送信サーバー（SMTP）</h3>
+    <label>サーバー<input id="smtp-host" maxlength="253" placeholder="smtp.example.com" autocapitalize="off" required></label>
+    <label>ポート<input id="smtp-port" type="number" min="1" max="65535" value="465" required></label>
+    <label>接続方式<select id="smtp-security"><option value="tls">TLS（通常465）</option><option value="starttls">STARTTLS（通常587）</option></select></label>
+    <label>ユーザー名<input id="smtp-username" maxlength="500" autocomplete="off" autocapitalize="off" required></label>
+    <label class="password-field">パスワード<input id="smtp-password" type="password" autocomplete="new-password" maxlength="4096"></label>
+    <h3>フォルダ</h3>
+    <label class="check imap-only"><input id="account-allfolders" type="checkbox" checked> サーバーの全フォルダを同期する</label>
+    <label id="folders-label" class="imap-only">同期フォルダ（1行に1つ）<textarea id="account-folders" class="small">INBOX</textarea></label>
+    <details class="imap-only"><summary>特別なフォルダを手動で指定（通常は自動検出）</summary>
+      <label>下書き<input id="account-drafts"></label>
+      <label>送信済み<input id="account-sent"></label>
+      <label>ごみ箱<input id="account-trash"></label>
+      <label>アーカイブ<input id="account-archive"></label>
+    </details>
+    <label class="check imap-only"><input id="account-savesent" type="checkbox" checked> 送信したメールを送信済みフォルダへ保存する（Gmail / Microsoftは自動保存のためオフ）</label>
+    <label>署名<textarea id="account-signature" class="small" maxlength="4000"></textarea></label>
+    <p class="hint">パスワードとOAuthトークンは暗号化して保存します。登録済みの値は画面に表示しません。</p>
+    <p id="test-result" role="status"></p>
+    <div class="row"><button type="button" id="delete-account" class="danger">このアカウントを削除</button><button type="button" id="test-account">接続テスト</button><button id="save-account" class="primary">暗号化して保存</button></div>
+  </fieldset></form>
+  <p class="hint">暗号化の対象はメールパスワードとOAuthトークンです。メール本文のDB、サーバー名、メールアドレス、Web/MCPトークンは暗号化されません。</p>
   <div class="row"><button id="close-settings" type="button">閉じる</button></div>
 </dialog>
 </body>

@@ -1,0 +1,39 @@
+{
+  "credential_encryption": {
+    "version": 1,
+    "salt": "egzPVnn+HLz8peU2qKxGkw==",
+    "verifier": "jAhkJvG2pLyWFB93lQfe6UyNYDfSMS9B6epa4LETNpNt64cEQS0QEgDKWl4amGf1+TUVGDik7ZlBqt0="
+  },
+  "web_token": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+  "mcp_token": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+  "sync_interval": 60,
+  "max_message_bytes": 25000000,
+  "sync_batch": 100,
+  "accounts": [
+    {
+      "id": "legacy",
+      "name": "Legacy",
+      "email": "legacy@example.com",
+      "enabled": true,
+      "imap": {
+        "host": "imap.example.com",
+        "port": 993,
+        "username": "legacy@example.com",
+        "encrypted_password": "xABhQ7ltVWMHoT9zeEq6jrviCyD+iuBBMBYodGEjxlBC6XgW8Hsn+LmKnKuIVA==",
+        "security": "tls"
+      },
+      "smtp": {
+        "host": "smtp.example.com",
+        "port": 587,
+        "username": "legacy@example.com",
+        "encrypted_password": "pADc55QvLeJ1Dvx01uztNwSWyaTXAecT1uNXlHgFdpIalP0UJ72am6AThn9mtA==",
+        "security": "starttls"
+      },
+      "folders": [
+        "INBOX",
+        "Sent"
+      ],
+      "drafts_folder": null
+    }
+  ]
+}

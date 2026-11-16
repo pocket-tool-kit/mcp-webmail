@@ -10,7 +10,7 @@ from email.utils import getaddresses, parsedate_to_datetime
 from html.parser import HTMLParser
 
 # Bump when parsing output changes; Database.initialize() rebuilds the cache.
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 _ESC_JIS = (b"\x1b$", b"\x1b(")
 # Labels whose C1 bytes (0x80-0x9F) are never real text; such bytes indicate a
@@ -191,32 +191,76 @@ def parse_message(raw: bytes):
     return BytesParser(policy=policy.compat32).parsebytes(raw)
 
 
+def _filename(part, index: int) -> str:
+    name = header(part.get_filename() or "")
+    if not name and part.get_content_type() == "message/rfc822":
+        name = "forwarded-message.eml"
+    # Display/download name only: no path components or control characters.
+    name = re.sub(r"[\x00-\x1f\x7f/\\\\]", "_", name).strip(" .")[:200]
+    return name or f"attachment-{index + 1}"
+
+
+def _walk(msg):
+    """Yield ("text"|"html"|"attachment", part) in one stable order.
+
+    Used both for the cached summary and for extracting an attachment by
+    index, so the index shown in the UI always addresses the same part.
+    """
+    def visit(part):
+        if part.get_content_type() == "message/rfc822":
+            yield "attachment", part
+        elif part.get_content_disposition() == "attachment" or part.get_filename():
+            yield "attachment", part
+        elif part.is_multipart():
+            for child in part.get_payload():
+                yield from visit(child)
+        elif part.get_content_type() == "text/plain":
+            yield "text", part
+        elif part.get_content_type() == "text/html":
+            yield "html", part
+        else:
+            yield "attachment", part
+    yield from visit(msg)
+
+
+def _attachment_bytes(part) -> bytes:
+    if part.get_content_type() == "message/rfc822":
+        payload = part.get_payload()
+        if isinstance(payload, list) and payload:
+            return payload[0].as_bytes()
+        return str(payload).encode("utf-8", errors="replace")
+    payload = part.get_payload(decode=True)
+    return payload if isinstance(payload, bytes) else b""
+
+
+def _attachment_info(part, index: int) -> dict:
+    cid = str(part.get("Content-ID", "")).strip().strip("<>")
+    kind = part.get_content_type()
+    return {"index": index, "filename": _filename(part, index),
+            "content_type": kind if re.fullmatch(r"[\w.+-]+/[\w.+-]+", kind) else "application/octet-stream",
+            "size": len(_attachment_bytes(part)),
+            "inline": part.get_content_disposition() == "inline" and bool(cid),
+            "cid": cid[:300]}
+
+
+def extract_attachment(raw: bytes, index: int) -> tuple[dict, bytes]:
+    """Return (metadata, content) for the index reported by parse_mail()."""
+    parts = [part for kind, part in _walk(parse_message(raw)) if kind == "attachment"]
+    if not 0 <= index < len(parts):
+        raise ValueError("Attachment not found")
+    return _attachment_info(parts[index], index), _attachment_bytes(parts[index])
+
+
 def parse_mail(raw: bytes) -> dict:
     msg = parse_message(raw)
-    text, html = [], []
-    attached = False
-
-    def visit(part):
-        nonlocal attached
-        if part.get_content_disposition() == "attachment" or part.get_filename():
-            attached = True
-            return
-        if part.get_content_type() == "message/rfc822":
-            attached = True
-            return
-        if part.is_multipart():
-            for child in part.get_payload():
-                visit(child)
-            return
-        kind = part.get_content_type()
-        if kind not in {"text/plain", "text/html"}:
-            attached = True
-            return
+    text, html, attachments = [], [], []
+    for kind, part in _walk(msg):
+        if kind == "attachment":
+            attachments.append(_attachment_info(part, len(attachments)))
+            continue
         payload = part.get_payload(decode=True)
         value = decode_bytes(payload, part.get_content_charset()) if isinstance(payload, bytes) else str(part.get_payload())
-        (html if kind == "text/html" else text).append(value)
-
-    visit(msg)
+        (html if kind == "html" else text).append(value)
     body_html = "\n".join(html)
     body_text = "\n".join(text) or html_to_text(body_html)
     try:
@@ -233,7 +277,8 @@ def parse_mail(raw: bytes) -> dict:
         "subject": header(msg.get("Subject")), "sender": header(msg.get("From")),
         "reply_to": header(msg.get("Reply-To")),
         "recipients": json.dumps(parse_recipients(msg), ensure_ascii=False), "date_ts": date_ts,
-        "body_text": body_text, "body_html": body_html, "has_attachments": attached,
+        "body_text": body_text, "body_html": body_html, "has_attachments": bool(attachments),
+        "attachments": json.dumps(attachments, ensure_ascii=False),
     }
 
 

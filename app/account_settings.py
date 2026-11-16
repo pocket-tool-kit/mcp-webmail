@@ -9,13 +9,15 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from filelock import FileLock
 from pydantic import EmailStr, Field, SecretStr
 
-from .config import Account, CONFIG, EncryptionMetadata, Endpoint, Settings, StrictModel, load_config
+from .config import (Account, CONFIG, EncryptionMetadata, Endpoint, McpPermissions, OAuthConfig, Settings,
+                     StrictModel, load_config)
 
 CHECK = b"portable-webmail-credentials-v1"
 
@@ -50,9 +52,29 @@ def endpoint_context(account, kind):
     return json.dumps(["v1", account.id, kind, ep.host, ep.port, ep.username, ep.security], separators=(",", ":"))
 
 
+def secret_slots(account):
+    """Every stored secret as (holder, json section, plain attr, AEAD context)."""
+    for kind in ("imap", "smtp"):
+        yield getattr(account, kind), kind, "password", endpoint_context(account, kind)
+    if account.oauth:
+        for slot in ("client_secret", "refresh_token"):
+            # Bound to the client and provider so a token cannot be replayed elsewhere.
+            yield account.oauth, "oauth", slot, json.dumps(
+                ["v1", account.id, "oauth", slot, account.oauth.provider, account.oauth.client_id, account.oauth.tenant],
+                separators=(",", ":"))
+
+
 class UnlockInput(StrictModel):
     master_password: SecretStr = Field(min_length=1, max_length=1024)
     confirmation: SecretStr | None = Field(default=None, max_length=1024)
+    # Only honoured during the very first setup.
+    mcp_permissions: McpPermissions | None = None
+
+
+class GeneralInput(StrictModel):
+    mcp_permissions: McpPermissions
+    mark_read_on_open: bool = True
+    allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
 
 
 class EndpointInput(StrictModel):
@@ -64,13 +86,31 @@ class EndpointInput(StrictModel):
     password: SecretStr = Field(default=SecretStr(""), max_length=4096)
 
 
+class OAuthInput(StrictModel):
+    provider: Literal["google", "microsoft"]
+    client_id: str = Field(min_length=1, max_length=300, pattern=r"^[\x21-\x7e]+$")
+    tenant: str = Field(default="common", pattern=r"^[A-Za-z0-9.-]{1,100}$")
+    # Empty means keep existing (or none, for public clients).
+    client_secret: SecretStr = Field(default=SecretStr(""), max_length=4096)
+
+
 class AccountInput(StrictModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     enabled: bool = True
+    protocol: Literal["imap", "pop3"] = "imap"
+    provider: str = Field(default="generic", pattern=r"^[a-z0-9_-]{1,32}$")
+    auth: Literal["password", "oauth2"] = "password"
+    oauth: OAuthInput | None = None
     folders: list[str] = Field(default_factory=lambda: ["INBOX"], min_length=1, max_length=100)
     drafts_folder: str | None = None
+    sent_folder: str | None = None
+    trash_folder: str | None = None
+    archive_folder: str | None = None
+    save_sent: bool = True
+    display_name: str = Field(default="", max_length=100)
+    signature: str = Field(default="", max_length=4000)
     imap: EndpointInput
     smtp: EndpointInput
 
@@ -94,10 +134,12 @@ class ConfigurationManager:
     def _read(self):
         try:
             value = Settings.model_validate_json(self.path.read_text(encoding="utf-8"))
-            if value.credential_encryption and any(ep.password.get_secret_value() for a in value.accounts for ep in (a.imap, a.smtp)):
-                raise ValueError()
-            if not value.credential_encryption and any(ep.encrypted_password for a in value.accounts for ep in (a.imap, a.smtp)):
-                raise ValueError()
+            for account in value.accounts:
+                for holder, _, slot, _ in secret_slots(account):
+                    plain = getattr(holder, slot).get_secret_value()
+                    stored = getattr(holder, "encrypted_" + slot)
+                    if (value.credential_encryption and plain) or (not value.credential_encryption and stored):
+                        raise ValueError()
             return value
         except Exception:
             raise ValueError("設定ファイルが不正です。暗号化後はpasswordを手入力せず、登録画面を使用してください。") from None
@@ -108,12 +150,10 @@ class ConfigurationManager:
     def _replace_runtime(self, settings, key):
         runtime = settings.model_copy(deep=True)
         for account in runtime.accounts:
-            for kind in ("imap", "smtp"):
-                endpoint = getattr(account, kind)
-                value = ""
-                if key and endpoint.encrypted_password:
-                    value = decrypt(key, endpoint.encrypted_password.get_secret_value(), endpoint_context(account, kind))
-                endpoint.password = SecretStr(value)
+            for holder, _, slot, context in secret_slots(account):
+                stored = getattr(holder, "encrypted_" + slot)
+                value = decrypt(key, stored.get_secret_value(), context) if key and stored else ""
+                setattr(holder, slot, SecretStr(value))
         # Keep the Settings object shared by sync / REST / HTTP MCP alive.
         for name in Settings.model_fields:
             setattr(self.settings, name, getattr(runtime, name))
@@ -128,10 +168,9 @@ class ConfigurationManager:
                 document[name] = getattr(settings, name).get_secret_value()
             for account in document["accounts"]:
                 source = settings.find_account(account["id"])
-                for kind in ("imap", "smtp"):
-                    endpoint = getattr(source, kind)
-                    account[kind].pop("password", None)
-                    account[kind]["encrypted_password"] = encrypt(key, endpoint.password.get_secret_value(), endpoint_context(source, kind))
+                for holder, section, slot, context in secret_slots(source):
+                    account[section].pop(slot, None)
+                    account[section]["encrypted_" + slot] = encrypt(key, getattr(holder, slot).get_secret_value(), context)
             serialized = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
             disk = Settings.model_validate_json(serialized)
             descriptor, temporary = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=self.path.parent)
@@ -152,14 +191,26 @@ class ConfigurationManager:
         with self._mutex:
             accounts = []
             for account in self._disk.accounts:
-                item = account.model_dump(mode="json", exclude={"imap", "smtp"})
+                item = account.model_dump(mode="json", exclude={"imap", "smtp", "oauth"})
                 for kind in ("imap", "smtp"):
                     ep = getattr(account, kind)
                     item[kind] = ep.model_dump(mode="json", exclude={"password", "encrypted_password"})
                     item[kind]["has_password"] = bool(ep.encrypted_password or ep.password.get_secret_value())
+                item["oauth"] = None
+                if account.oauth:
+                    runtime = self.settings.find_account(account.id)
+                    item["oauth"] = {
+                        "provider": account.oauth.provider, "client_id": account.oauth.client_id,
+                        "tenant": account.oauth.tenant,
+                        "has_client_secret": bool(runtime and runtime.oauth and runtime.oauth.client_secret.get_secret_value()),
+                        "signed_in": bool(runtime and runtime.oauth and runtime.oauth.refresh_token.get_secret_value()),
+                    }
                 accounts.append(item)
             return {"encrypted": self._disk.credential_encryption is not None,
-                    "locked": self._key is None, "accounts": accounts}
+                    "locked": self._key is None, "accounts": accounts,
+                    "mcp_permissions": self._disk.mcp_permissions,
+                    "mark_read_on_open": self._disk.mark_read_on_open,
+                    "allowed_hosts": list(self._disk.allowed_hosts)}
 
     def refresh(self):
         """stdio processes see Web edits without persisting or sharing the key."""
@@ -192,6 +243,8 @@ class ConfigurationManager:
                 key = derive(password, salt)
                 candidate = self._disk.model_copy(deep=True)
                 candidate.credential_encryption = EncryptionMetadata(salt=encode(salt), verifier=encrypt(key, CHECK.decode(), "verifier:v1"))
+                if data.mcp_permissions:
+                    candidate.mcp_permissions = data.mcp_permissions
                 self._write(candidate, key)
             else:
                 try:
@@ -210,27 +263,74 @@ class ConfigurationManager:
             self._failures = 0
             return self.public_state()
 
+    def _editable(self):
+        if self._key is None:
+            raise ValueError("先にマスターパスワードでロックを解除してください。")
+        return self.settings.model_copy(deep=True)
+
     def save_account(self, data: AccountInput):
         with self._mutex:
-            if self._key is None:
-                raise ValueError("先にマスターパスワードでロックを解除してください。")
-            candidate = self.settings.model_copy(deep=True)
+            candidate = self._editable()
             old = candidate.find_account(data.id)
-            document = data.model_dump(exclude={"imap", "smtp"})
-            for kind in ("imap", "smtp"):
+            document = data.model_dump(exclude={"imap", "smtp", "oauth"})
+            for kind, label in (("imap", "受信サーバー（IMAP/POP3）"), ("smtp", "SMTP")):
                 value = getattr(data, kind)
                 password = value.password.get_secret_value()
                 if not password and old:
                     password = getattr(old, kind).password.get_secret_value()
-                if not password:
-                    raise ValueError(f"{kind.upper()}のパスワードを入力してください。")
+                if not password and data.auth == "password":
+                    label = kind.upper() if data.protocol == "imap" else label
+                    raise ValueError(f"{label}のパスワードを入力してください。")
                 document[kind] = Endpoint(**value.model_dump(exclude={"password"}), password=SecretStr(password))
+            if data.oauth:
+                previous = old.oauth if old else None
+                same_client = bool(previous and (previous.provider, previous.client_id, previous.tenant) ==
+                                   (data.oauth.provider, data.oauth.client_id, data.oauth.tenant))
+                secret = data.oauth.client_secret.get_secret_value() or (previous.client_secret.get_secret_value() if same_client else "")
+                # A sign-in belongs to one client registration and mailbox user.
+                keep = same_client and old.imap.username == data.imap.username
+                document["oauth"] = OAuthConfig(
+                    provider=data.oauth.provider, client_id=data.oauth.client_id, tenant=data.oauth.tenant,
+                    client_secret=SecretStr(secret),
+                    refresh_token=SecretStr(previous.refresh_token.get_secret_value() if keep else ""))
             try:
                 account = Account.model_validate(document)
             except Exception:
-                raise ValueError("アカウント設定を確認してください。フォルダ名に改行は使用できません。") from None
+                raise ValueError("アカウント設定を確認してください。フォルダ名に改行は使用できません。OAuth2はIMAPでのみ利用できます。") from None
             candidate.accounts = [account if a.id == account.id else a for a in candidate.accounts]
             if old is None:
                 candidate.accounts.append(account)
+            self._write(candidate, self._key)
+            return self.public_state()
+
+    def delete_account(self, account_id: str):
+        with self._mutex:
+            candidate = self._editable()
+            if candidate.find_account(account_id) is None:
+                raise ValueError("Unknown account")
+            candidate.accounts = [a for a in candidate.accounts if a.id != account_id]
+            self._write(candidate, self._key)
+            return self.public_state()
+
+    def save_general(self, data: GeneralInput):
+        with self._mutex:
+            candidate = self._editable()
+            candidate.mcp_permissions = data.mcp_permissions
+            candidate.mark_read_on_open = data.mark_read_on_open
+            candidate.allowed_hosts = [h.strip().lower() for h in data.allowed_hosts if h.strip()]
+            try:
+                Settings.model_validate(candidate.model_dump())
+            except Exception:
+                raise ValueError("許可するホスト名を確認してください（例: pc.tailnet.ts.net）。ワイルドカードやポート番号は指定できません。") from None
+            self._write(candidate, self._key)
+            return self.public_state()
+
+    def set_oauth_refresh_token(self, account_id: str, token: str):
+        with self._mutex:
+            candidate = self._editable()
+            account = candidate.find_account(account_id)
+            if account is None or account.oauth is None:
+                raise ValueError("Unknown OAuth account")
+            account.oauth.refresh_token = SecretStr(token)
             self._write(candidate, self._key)
             return self.public_state()

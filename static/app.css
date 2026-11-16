@@ -1,0 +1,113 @@
+:root{font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;color:#1c2a40;background:#eef2f7;-webkit-text-size-adjust:100%}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;display:flex;flex-direction:column;height:100dvh;overflow:hidden}
+button,input,select,textarea{font:inherit}
+button{cursor:pointer;background:#fff;border:1px solid #c8d3e1;border-radius:8px;padding:9px 12px;color:#203c61;min-height:40px}
+button:hover{background:#e9f1ff}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #7fb0ff;outline-offset:1px}
+.primary{background:#245dc1;color:#fff;border-color:#245dc1}
+.primary:hover{background:#174a9f}
+.danger{color:#a2222b;border-color:#e3b9bd}
+.danger:hover{background:#fdecee}
+/* 16px keeps iOS Safari from zooming into focused fields. */
+input,textarea,select{width:100%;border:1px solid #b6c4d6;border-radius:8px;padding:10px;background:#fff;font-size:16px;color:inherit}
+input[type=checkbox]{width:20px;height:20px;flex:none;margin:0;accent-color:#245dc1}
+textarea{min-height:220px;resize:vertical}
+textarea.small{min-height:76px}
+code{background:#e7edf7;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}
+header{display:flex;align-items:center;gap:8px;padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top));background:#172b4d;color:#fff;flex:none}
+header h1{font-size:18px;margin:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header button{background:transparent;color:#fff;border-color:#48608a}
+header button:hover{background:#24406e}
+header .primary{background:#3d7be6;border-color:#3d7be6}
+.icon{font-size:20px;line-height:1;padding:6px 12px}
+.only-mobile{display:none}
+#status{padding:8px 14px;font-size:13px;background:#e7edf7;overflow-wrap:anywhere;flex:none;min-height:34px}
+.error{color:#a2222b}
+#status.error{background:#fdecee}
+.hint{font-size:13px;color:#56677f;line-height:1.6}
+.hidden{display:none!important}
+.panes{display:grid;grid-template-columns:240px minmax(300px,400px) minmax(320px,1fr);flex:1;min-height:0;position:relative}
+nav,.list,.preview{overflow:auto;-webkit-overflow-scrolling:touch;background:#fff;border-right:1px solid #d7e0eb;min-height:0}
+nav{background:#f6f8fc;padding:12px}
+#scrim{display:none}
+.account{padding:16px 4px 6px;font-weight:700;font-size:14px;overflow-wrap:anywhere}
+.folder{display:flex;justify-content:space-between;gap:8px;width:100%;text-align:left;margin:4px 0;overflow-wrap:anywhere;border-color:transparent;background:transparent}
+.folder .count{color:#245dc1;font-weight:700;flex:none}
+.folder.active{background:#dce9ff;border-color:#b9d1fb}
+.toolbar{padding:10px;display:flex;gap:8px;border-bottom:1px solid #d7e0eb;position:sticky;top:0;background:#fff;z-index:2}
+.toolbar button{flex:none}
+.filters{display:flex;gap:6px;padding:8px 10px;flex-wrap:wrap;border-bottom:1px solid #e7edf5}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:6px 10px;border:1px solid #c8d3e1;border-radius:999px;margin:0;cursor:pointer}
+.bulk{display:flex;gap:6px;padding:8px 10px;flex-wrap:wrap;align-items:center;background:#f0f5ff;border-bottom:1px solid #d7e0eb;position:sticky;top:61px;z-index:2;font-size:13px}
+.bulk button{padding:6px 10px;min-height:36px}
+.mail{display:flex;align-items:flex-start;gap:6px;border-bottom:1px solid #e7edf5;padding:8px 8px 8px 10px}
+.mail.selected{background:#f0f5ff}
+.mail.current{background:#dce9ff}
+.mail .pick{padding:12px 4px;display:flex}
+.mail .star{border:0;background:transparent;font-size:20px;padding:6px;min-height:44px;color:#b3bfd0}
+.mail .star.on{color:#e0a100}
+.mail .open{flex:1;min-width:0;border:0;background:transparent;text-align:left;padding:6px 4px;border-radius:6px}
+.mail .open strong,.mail .open span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mail .open strong{font-weight:400}
+.mail .open .top{display:flex;gap:8px;justify-content:space-between}
+.mail .open .top span:first-child{flex:1}
+.mail .open .top span:last-child{flex:none;font-size:12px;color:#68788e}
+.mail .open span{font-size:13px;color:#68788e;margin-top:3px}
+.mail.unread .open strong,.mail.unread .open .top span:first-child{font-weight:700;color:#12233f}
+.mail.unread .open strong:before{content:'● ';color:#3576da}
+.preview{padding:20px;border-right:0}
+.preview h2{overflow-wrap:anywhere;margin-top:0;font-size:20px}
+.meta{white-space:pre-wrap;overflow-wrap:anywhere;color:#56677f;font-size:13px;line-height:1.7}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+.attachments{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.attachments button,.attachments label{font-size:13px;display:inline-flex;gap:6px;align-items:center;margin:0;padding:8px 10px;border:1px solid #c8d3e1;border-radius:8px;background:#f6f8fc;max-width:100%;overflow-wrap:anywhere}
+pre{font:15px/1.8 system-ui,-apple-system,"Hiragino Sans",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+iframe{width:100%;height:70vh;border:1px solid #d7e0eb;background:#fff}
+#thread-list{display:flex;flex-direction:column;gap:6px}
+#thread-list button{text-align:left}
+dialog{width:min(760px,96vw);border:1px solid #c5d1e3;border-radius:12px;padding:22px;max-height:92dvh;color:inherit}
+dialog.narrow{width:min(480px,96vw)}
+dialog::backdrop{background:#152a4890}
+label{display:block;margin-bottom:12px;font-size:13px}
+label input,label select,label textarea{margin-top:6px}
+label.check{display:flex;align-items:center;gap:10px;font-size:14px}
+label.check input{margin-top:0}
+fieldset{border:1px solid #d7e0eb;border-radius:10px;margin:0 0 16px;padding:14px;min-width:0}
+legend{font-weight:700;padding:0 6px}
+.group{border-left:3px solid #b9d1fb;padding-left:12px;margin-bottom:12px}
+details{margin-bottom:12px}
+summary{cursor:pointer;font-size:13px;padding:8px 0}
+.row{display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+.row.left{justify-content:flex-start;align-items:center}
+.empty{color:#71829a;padding:30px}
+#more{margin:12px;width:calc(100% - 24px)}
+#move-list{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;max-height:60dvh;overflow:auto}
+#move-list button{text-align:left}
+
+@media(max-width:1100px){.panes{grid-template-columns:200px minmax(260px,340px) minmax(300px,1fr)}}
+
+/* Phones and narrow windows: one pane at a time, folders in a drawer. */
+@media(max-width:800px){
+  .only-mobile{display:inline-block}
+  header .label{display:none}
+  header button{padding:8px 10px;min-width:44px;min-height:44px}
+  .panes{display:block}
+  .list,.preview{position:absolute;inset:0;border-right:0}
+  body.view-list .preview,body.view-mail .list{display:none}
+  body.view-list #back,body.view-mail #menu{display:none}
+  nav{position:absolute;top:0;bottom:0;left:0;width:min(84vw,320px);z-index:6;transform:translateX(-102%);transition:transform .18s ease;box-shadow:4px 0 18px #0003;padding-bottom:calc(12px + env(safe-area-inset-bottom))}
+  body.nav-open nav{transform:none}
+  body.nav-open #scrim{display:block;position:absolute;inset:0;background:#152a4870;z-index:5}
+  .folder{min-height:46px;align-items:center}
+  .preview{padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  .list{padding-bottom:env(safe-area-inset-bottom)}
+  .actions button{flex:1 1 30%}
+  dialog{width:100vw;max-width:100vw;height:100dvh;max-height:100dvh;margin:0;border:0;border-radius:0;padding:16px;padding-top:calc(16px + env(safe-area-inset-top));padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+  dialog.narrow{height:auto;margin:auto;width:94vw;border-radius:12px}
+  .row button{flex:1 1 auto;min-height:46px}
+  iframe{height:60dvh}
+}
+@media(prefers-reduced-motion:reduce){nav{transition:none}}
